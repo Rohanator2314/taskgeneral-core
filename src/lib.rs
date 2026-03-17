@@ -2,6 +2,9 @@ pub mod error;
 pub mod models;
 pub mod task_manager;
 
+#[cfg(feature = "postgres")]
+pub mod storage;
+
 use error::Result;
 use models::{SortField, SyncResult, TaskFilter, TaskInfo, TaskUpdate, WorkingSetItem};
 use std::sync::{Arc, Mutex};
