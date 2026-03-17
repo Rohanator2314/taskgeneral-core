@@ -20,8 +20,12 @@ pub mod pg {
     fn compute_urgency(
         is_active: bool,
         is_waiting: bool,
+        has_next: bool,
         priority: &Option<String>,
         due: Option<&DateTime<Utc>>,
+        entry: Option<&DateTime<Utc>>,
+        tags: &[String],
+        project: &Option<String>,
     ) -> f64 {
         let p = priority.as_deref().unwrap_or("");
         let due_score = if let Some(d) = due {
@@ -37,12 +41,28 @@ pub mod pg {
         } else {
             0.0
         };
-        6.0 * if p == "H" { 1.0 } else { 0.0 }
-            + 3.9 * if p == "M" { 1.0 } else { 0.0 }
-            + 1.8 * if p == "L" { 1.0 } else { 0.0 }
-            + 4.0 * if is_active { 1.0 } else { 0.0 }
-            + (-3.0) * if is_waiting { 1.0 } else { 0.0 }
+        let age_score = if let Some(e) = entry {
+            let age_days = (Utc::now() - *e).num_seconds() as f64 / 86400.0;
+            (age_days / 365.0).clamp(0.0, 1.0) * 2.0
+        } else {
+            0.0
+        };
+        let tag_score = match tags.len() {
+            0 => 0.0,
+            1 => 0.8,
+            2 => 0.9,
+            _ => 1.0,
+        };
+        15.0 * if has_next { 1.0 } else { 0.0 }
             + due_score
+            + 6.0 * if p == "H" { 1.0 } else { 0.0 }
+            + 4.0 * if is_active { 1.0 } else { 0.0 }
+            + 3.9 * if p == "M" { 1.0 } else { 0.0 }
+            + age_score
+            + 1.8 * if p == "L" { 1.0 } else { 0.0 }
+            + tag_score
+            + 1.0 * if project.is_some() { 1.0 } else { 0.0 }
+            + (-3.0) * if is_waiting { 1.0 } else { 0.0 }
     }
 
     pub struct PostgresTaskManager {
@@ -695,7 +715,17 @@ pub mod pg {
                         .map(|ts| DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now));
                     let recur: Option<String> = task.get_value("recur").map(|s| s.to_string());
 
-                    let urgency = compute_urgency(is_active, is_waiting, &priority, due.as_ref());
+                    let has_next = tags.iter().any(|t| t == "next");
+                    let urgency = compute_urgency(
+                        is_active,
+                        is_waiting,
+                        has_next,
+                        &priority,
+                        due.as_ref(),
+                        entry.as_ref(),
+                        &tags,
+                        &project,
+                    );
 
                     self.client
                         .execute(
