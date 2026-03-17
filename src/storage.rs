@@ -10,8 +10,43 @@ pub mod pg {
     use tokio_postgres::Client;
     use uuid::Uuid;
 
+    use taskchampion::{
+        server::ServerConfig,
+        storage::inmemory::InMemoryStorage,
+        Operations, Replica, Status, Tag,
+        Uuid as TcUuid,
+    };
+
+    fn compute_urgency(
+        is_active: bool,
+        is_waiting: bool,
+        priority: &Option<String>,
+        due: Option<&DateTime<Utc>>,
+    ) -> f64 {
+        let p = priority.as_deref().unwrap_or("");
+        let due_score = if let Some(d) = due {
+            let secs = d.signed_duration_since(Utc::now()).num_seconds() as f64;
+            let days = secs / 86400.0;
+            if days < 0.0 {
+                12.0
+            } else if days < 7.0 {
+                12.0 * (1.0 - days / 7.0)
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+        6.0 * if p == "H" { 1.0 } else { 0.0 }
+            + 3.9 * if p == "M" { 1.0 } else { 0.0 }
+            + 1.8 * if p == "L" { 1.0 } else { 0.0 }
+            + 4.0 * if is_active { 1.0 } else { 0.0 }
+            + (-3.0) * if is_waiting { 1.0 } else { 0.0 }
+            + due_score
+    }
+
     pub struct PostgresTaskManager {
-        client: Client,
+        client: Arc<Client>,
         user_id: Uuid,
         rt: Arc<Runtime>,
     }
@@ -21,6 +56,16 @@ pub mod pg {
         /// The runtime must be the same one used to establish the connection
         /// and to run the connection driver task.
         pub fn new_with_runtime(client: Client, user_id: &str, rt: Arc<Runtime>) -> Result<Self> {
+            let user_uuid = Uuid::parse_str(user_id)
+                .map_err(|e| TaskError::InvalidUuid(format!("Invalid user_id: {}", e)))?;
+            Ok(PostgresTaskManager {
+                client: Arc::new(client),
+                user_id: user_uuid,
+                rt,
+            })
+        }
+
+        pub fn new_arc(client: Arc<Client>, user_id: &str, rt: Arc<Runtime>) -> Result<Self> {
             let user_uuid = Uuid::parse_str(user_id)
                 .map_err(|e| TaskError::InvalidUuid(format!("Invalid user_id: {}", e)))?;
             Ok(PostgresTaskManager {
@@ -44,7 +89,7 @@ pub mod pg {
                     .map_err(|e| TaskError::IoError(e.to_string()))?,
             );
             Ok(PostgresTaskManager {
-                client,
+                client: Arc::new(client),
                 user_id: user_uuid,
                 rt,
             })
@@ -461,10 +506,242 @@ pub mod pg {
             Ok(())
         }
 
+        pub fn get_sync_config(&mut self) -> Result<Option<(Option<String>, Option<String>)>> {
+            let user_id = self.user_id;
+            let result = self.rt.block_on(async {
+                let row = self.client
+                    .query_opt(
+                        "SELECT server_url, client_id FROM tg_sync_config WHERE user_id = $1",
+                        &[&user_id],
+                    )
+                    .await
+                    .map_err(|e| TaskError::StorageError(format!("Failed to get sync config: {e}")))?;
+                Ok::<Option<(Option<String>, Option<String>)>, TaskError>(row.map(|r| {
+                    let server_url: Option<String> = r.get("server_url");
+                    let client_id: Option<String> = r.get("client_id");
+                    (server_url, client_id)
+                }))
+            })?;
+            Ok(result)
+        }
+
         pub fn sync(&mut self) -> Result<SyncResult> {
+            let user_id = self.user_id;
+
+            let row = self.rt.block_on(async {
+                self.client
+                    .query_opt(
+                        "SELECT server_url, client_id, encryption_secret_encrypted \
+                         FROM tg_sync_config WHERE user_id = $1",
+                        &[&user_id],
+                    )
+                    .await
+                    .map_err(|e| TaskError::StorageError(format!("Failed to read sync config: {e}")))
+            })?;
+
+            let row = match row {
+                Some(r) => r,
+                None => return Ok(SyncResult {
+                    success: false,
+                    message: "Sync not configured".to_string(),
+                }),
+            };
+
+            let server_url: Option<String> = row.get("server_url");
+            let client_id_str: Option<String> = row.get("client_id");
+            let secret_str: Option<String> = row.get("encryption_secret_encrypted");
+
+            let (server_url, client_id_str, secret_str) = match (server_url, client_id_str, secret_str) {
+                (Some(u), Some(c), Some(s)) => (u, c, s),
+                _ => return Ok(SyncResult {
+                    success: false,
+                    message: "Sync config incomplete (missing url, client_id, or secret)".to_string(),
+                }),
+            };
+
+            let tc_client_id = TcUuid::parse_str(&client_id_str)
+                .map_err(|e| TaskError::StorageError(format!("Invalid client_id UUID: {e}")))?;
+
+            let pg_tasks = self.rt.block_on(async {
+                self.client
+                    .query(
+                        "SELECT uuid, description, status, project, tags, priority, \
+                                entry, modified_at, due, wait, start, recur, is_active \
+                         FROM tg_tasks WHERE user_id = $1",
+                        &[&user_id],
+                    )
+                    .await
+                    .map_err(|e| TaskError::StorageError(format!("Failed to read tasks: {e}")))
+            })?;
+
+            let result = self.rt.block_on(async {
+                let storage = InMemoryStorage::new();
+                let mut replica = Replica::new(storage);
+
+                for row in &pg_tasks {
+                    let uuid_val: Uuid = row.get("uuid");
+                    let tc_uuid = TcUuid::from_bytes(*uuid_val.as_bytes());
+
+                    let mut ops = Operations::new();
+                    let mut task = replica.create_task(tc_uuid, &mut ops).await?;
+
+                    let desc: String = row.get("description");
+                    task.set_description(desc, &mut ops)?;
+
+                    let status_str: String = row.get("status");
+                    let tc_status = match status_str.as_str() {
+                        "completed" => Status::Completed,
+                        "deleted" => Status::Deleted,
+                        "recurring" => Status::Recurring,
+                        _ => Status::Pending,
+                    };
+                    task.set_status(tc_status, &mut ops)?;
+
+                    if let Some(project) = row.get::<_, Option<String>>("project") {
+                        task.set_value("project", Some(project), &mut ops)?;
+                    }
+
+                    let tags: Vec<String> = row.get("tags");
+                    for tag_str in tags {
+                        if let Ok(tag) = tag_str.parse::<Tag>() {
+                            task.add_tag(&tag, &mut ops)?;
+                        }
+                    }
+
+                    let priority: Option<String> = row.get("priority");
+                    if let Some(p) = priority {
+                        if !p.is_empty() {
+                            task.set_priority(p, &mut ops)?;
+                        }
+                    }
+
+                    let entry: Option<DateTime<Utc>> = row.get("entry");
+                    if let Some(e) = entry {
+                        task.set_entry(Some(e), &mut ops)?;
+                    }
+
+                    let due: Option<DateTime<Utc>> = row.get("due");
+                    task.set_due(due, &mut ops)?;
+
+                    let wait: Option<DateTime<Utc>> = row.get("wait");
+                    task.set_wait(wait, &mut ops)?;
+
+                    if let Some(recur) = row.get::<_, Option<String>>("recur") {
+                        task.set_value("recur", Some(recur), &mut ops)?;
+                    }
+
+                    let is_active: bool = row.get("is_active");
+                    if is_active {
+                        task.set_value("start", Some(chrono::Utc::now().timestamp().to_string()), &mut ops)?;
+                    }
+
+                    replica.commit_operations(ops).await?;
+                }
+
+                let server_config = ServerConfig::Remote {
+                    url: server_url.clone(),
+                    client_id: tc_client_id,
+                    encryption_secret: secret_str.into_bytes(),
+                };
+                let mut server = server_config.into_server().await?;
+                replica.sync(&mut server, false).await?;
+
+                let all_uuids = replica.all_task_uuids().await?;
+                let mut synced_tasks: Vec<(TcUuid, taskchampion::Task)> = Vec::new();
+                for uuid in all_uuids {
+                    if let Some(task) = replica.get_task(uuid).await? {
+                        synced_tasks.push((uuid, task));
+                    }
+                }
+
+                Ok::<Vec<(TcUuid, taskchampion::Task)>, taskchampion::Error>(synced_tasks)
+            });
+
+            let synced_tasks = match result {
+                Ok(tasks) => tasks,
+                Err(e) => return Ok(SyncResult {
+                    success: false,
+                    message: format!("Sync failed: {e}"),
+                }),
+            };
+
+            self.rt.block_on(async {
+                self.client
+                    .execute("DELETE FROM tg_tasks WHERE user_id = $1", &[&user_id])
+                    .await
+                    .map_err(|e| TaskError::StorageError(format!("Failed to clear tasks before sync write: {e}")))?;
+
+                for (tc_uuid, task) in &synced_tasks {
+                    let task_uuid = Uuid::from_bytes(*tc_uuid.as_bytes());
+                    let desc = task.get_description().to_string();
+                    let status_str = format!("{:?}", task.get_status()).to_lowercase();
+                    let project: Option<String> = task.get_value("project").map(|s| s.to_string());
+                    let tags: Vec<String> = task.get_tags()
+                        .filter(|t| !t.is_synthetic())
+                        .map(|t| t.to_string())
+                        .collect();
+                    let priority: Option<String> = {
+                        let p = task.get_priority();
+                        if p.is_empty() { None } else { Some(p.to_string()) }
+                    };
+                    let entry: Option<DateTime<Utc>> = task.get_entry();
+                    let modified_at: DateTime<Utc> = task.get_modified().unwrap_or_else(Utc::now);
+                    let due: Option<DateTime<Utc>> = task.get_due();
+                    let wait: Option<DateTime<Utc>> = task.get_wait();
+                    let is_active = task.is_active();
+                    let is_waiting = task.is_waiting();
+                    let start: Option<DateTime<Utc>> = task.get_value("start")
+                        .and_then(|s| s.parse::<i64>().ok())
+                        .map(|ts| DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now));
+                    let recur: Option<String> = task.get_value("recur").map(|s| s.to_string());
+
+                    let urgency = compute_urgency(is_active, is_waiting, &priority, due.as_ref());
+
+                    self.client
+                        .execute(
+                            "INSERT INTO tg_tasks \
+                             (user_id, uuid, description, status, project, tags, priority, \
+                              entry, modified_at, due, wait, start, recur, urgency, is_active, is_waiting) \
+                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
+                             ON CONFLICT (user_id, uuid) DO UPDATE SET \
+                               description = EXCLUDED.description, \
+                               status = EXCLUDED.status, \
+                               project = EXCLUDED.project, \
+                               tags = EXCLUDED.tags, \
+                               priority = EXCLUDED.priority, \
+                               entry = EXCLUDED.entry, \
+                               modified_at = EXCLUDED.modified_at, \
+                               due = EXCLUDED.due, \
+                               wait = EXCLUDED.wait, \
+                               start = EXCLUDED.start, \
+                               recur = EXCLUDED.recur, \
+                               urgency = EXCLUDED.urgency, \
+                               is_active = EXCLUDED.is_active, \
+                               is_waiting = EXCLUDED.is_waiting",
+                            &[
+                                &user_id, &task_uuid, &desc, &status_str, &project, &tags,
+                                &priority, &entry, &modified_at, &due, &wait, &start,
+                                &recur, &urgency, &is_active, &is_waiting,
+                            ],
+                        )
+                        .await
+                        .map_err(|e| TaskError::StorageError(format!("Failed to upsert synced task: {e}")))?;
+                }
+
+                self.client
+                    .execute(
+                        "UPDATE tg_sync_config SET last_sync = NOW() WHERE user_id = $1",
+                        &[&user_id],
+                    )
+                    .await
+                    .map_err(|e| TaskError::StorageError(format!("Failed to update last_sync: {e}")))?;
+
+                Ok::<(), TaskError>(())
+            })?;
+
             Ok(SyncResult {
-                success: false,
-                message: "Sync not yet implemented for Postgres backend".to_string(),
+                success: true,
+                message: format!("Synced {} tasks", synced_tasks.len()),
             })
         }
 
