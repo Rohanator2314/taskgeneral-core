@@ -479,7 +479,7 @@ pub mod pg {
             self.rt.block_on(async {
                 self.client
                     .execute(
-                        "DELETE FROM tg_tasks WHERE user_id = $1 AND uuid = $2",
+                        "UPDATE tg_tasks SET status = 'deleted', modified_at = NOW() WHERE user_id = $1 AND uuid = $2",
                         &[&user_id, &uuid],
                     )
                     .await
