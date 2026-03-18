@@ -632,7 +632,7 @@ fn calculate_urgency(task: &Task) -> f64 {
     let has_next = task
         .get_tags()
         .filter(|t| !t.is_synthetic())
-        .any(|t| t.to_string() == "NEXT");
+        .any(|t| t.to_string() == "next");
     let has_project = task.get_value("project").is_some();
 
     15.0 * if has_next { 1.0 } else { 0.0 }
@@ -648,11 +648,19 @@ fn calculate_urgency(task: &Task) -> f64 {
 }
 
 fn task_to_info(task: &Task) -> TaskInfo {
-    let tags: Vec<String> = task
+    let mut tags: Vec<String> = task
         .get_tags()
         .filter(|t| !t.is_synthetic())
         .map(|t| t.to_string())
         .collect();
+
+    if task.get_wait().is_some() && !tags.contains(&"wait".to_string()) {
+        tags.push("wait".to_string());
+    }
+
+    if task.get_value("recur").is_some() && !tags.contains(&"recur".to_string()) {
+        tags.push("recur".to_string());
+    }
 
     TaskInfo {
         uuid: task.get_uuid().to_string(),

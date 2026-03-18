@@ -11,9 +11,7 @@ pub mod pg {
     use uuid::Uuid;
 
     use taskchampion::{
-        server::ServerConfig,
-        storage::inmemory::InMemoryStorage,
-        Operations, Replica, Status, Tag,
+        server::ServerConfig, storage::inmemory::InMemoryStorage, Operations, Replica, Status, Tag,
         Uuid as TcUuid,
     };
 
@@ -53,11 +51,26 @@ pub mod pg {
         };
         15.0 * if has_next { 1.0 } else { 0.0 }
             + due_score
-            + 6.0 * if priority.as_deref() == Some(&"H".to_string()) { 1.0 } else { 0.0 }
+            + 6.0
+                * if priority.as_deref() == Some(&"H".to_string()) {
+                    1.0
+                } else {
+                    0.0
+                }
             + 4.0 * if is_active { 1.0 } else { 0.0 }
-            + 3.9 * if priority.as_deref() == Some(&"M".to_string()) { 1.0 } else { 0.0 }
+            + 3.9
+                * if priority.as_deref() == Some(&"M".to_string()) {
+                    1.0
+                } else {
+                    0.0
+                }
             + age_score
-            + 1.8 * if priority.as_deref() == Some(&"L".to_string()) { 1.0 } else { 0.0 }
+            + 1.8
+                * if priority.as_deref() == Some(&"L".to_string()) {
+                    1.0
+                } else {
+                    0.0
+                }
             + tag_score
             + 1.0 * if project.is_some() { 1.0 } else { 0.0 }
             + (-3.0) * if is_waiting { 1.0 } else { 0.0 }
@@ -138,7 +151,9 @@ pub mod pg {
                     &[],
                 )
                 .await
-                .map_err(|e| TaskError::StorageError(format!("Failed to create tasks table: {e}")))?;
+                .map_err(|e| {
+                    TaskError::StorageError(format!("Failed to create tasks table: {e}"))
+                })?;
 
             self.client
                 .execute(
@@ -151,7 +166,9 @@ pub mod pg {
                     &[],
                 )
                 .await
-                .map_err(|e| TaskError::StorageError(format!("Failed to create working_set table: {e}")))?;
+                .map_err(|e| {
+                    TaskError::StorageError(format!("Failed to create working_set table: {e}"))
+                })?;
 
             self.client
                 .execute(
@@ -167,7 +184,9 @@ pub mod pg {
                     &[],
                 )
                 .await
-                .map_err(|e| TaskError::StorageError(format!("Failed to create sync_config table: {e}")))?;
+                .map_err(|e| {
+                    TaskError::StorageError(format!("Failed to create sync_config table: {e}"))
+                })?;
 
             Ok(())
         }
@@ -527,13 +546,16 @@ pub mod pg {
         pub fn get_sync_config(&mut self) -> Result<Option<(Option<String>, Option<String>)>> {
             let user_id = self.user_id;
             let result = self.rt.block_on(async {
-                let row = self.client
+                let row = self
+                    .client
                     .query_opt(
                         "SELECT server_url, client_id FROM tg_sync_config WHERE user_id = $1",
                         &[&user_id],
                     )
                     .await
-                    .map_err(|e| TaskError::StorageError(format!("Failed to get sync config: {e}")))?;
+                    .map_err(|e| {
+                        TaskError::StorageError(format!("Failed to get sync config: {e}"))
+                    })?;
                 Ok::<Option<(Option<String>, Option<String>)>, TaskError>(row.map(|r| {
                     let server_url: Option<String> = r.get("server_url");
                     let client_id: Option<String> = r.get("client_id");
@@ -554,28 +576,36 @@ pub mod pg {
                         &[&user_id],
                     )
                     .await
-                    .map_err(|e| TaskError::StorageError(format!("Failed to read sync config: {e}")))
+                    .map_err(|e| {
+                        TaskError::StorageError(format!("Failed to read sync config: {e}"))
+                    })
             })?;
 
             let row = match row {
                 Some(r) => r,
-                None => return Ok(SyncResult {
-                    success: false,
-                    message: "Sync not configured".to_string(),
-                }),
+                None => {
+                    return Ok(SyncResult {
+                        success: false,
+                        message: "Sync not configured".to_string(),
+                    })
+                }
             };
 
             let server_url: Option<String> = row.get("server_url");
             let client_id_str: Option<String> = row.get("client_id");
             let secret_str: Option<String> = row.get("encryption_secret_encrypted");
 
-            let (server_url, client_id_str, secret_str) = match (server_url, client_id_str, secret_str) {
-                (Some(u), Some(c), Some(s)) => (u, c, s),
-                _ => return Ok(SyncResult {
-                    success: false,
-                    message: "Sync config incomplete (missing url, client_id, or secret)".to_string(),
-                }),
-            };
+            let (server_url, client_id_str, secret_str) =
+                match (server_url, client_id_str, secret_str) {
+                    (Some(u), Some(c), Some(s)) => (u, c, s),
+                    _ => {
+                        return Ok(SyncResult {
+                            success: false,
+                            message: "Sync config incomplete (missing url, client_id, or secret)"
+                                .to_string(),
+                        })
+                    }
+                };
 
             let tc_client_id = TcUuid::parse_str(&client_id_str)
                 .map_err(|e| TaskError::StorageError(format!("Invalid client_id UUID: {e}")))?;
@@ -650,7 +680,11 @@ pub mod pg {
 
                     let is_active: bool = row.get("is_active");
                     if is_active {
-                        task.set_value("start", Some(chrono::Utc::now().timestamp().to_string()), &mut ops)?;
+                        task.set_value(
+                            "start",
+                            Some(chrono::Utc::now().timestamp().to_string()),
+                            &mut ops,
+                        )?;
                     }
 
                     replica.commit_operations(ops).await?;
@@ -677,10 +711,12 @@ pub mod pg {
 
             let synced_tasks = match result {
                 Ok(tasks) => tasks,
-                Err(e) => return Ok(SyncResult {
-                    success: false,
-                    message: format!("Sync failed: {e}"),
-                }),
+                Err(e) => {
+                    return Ok(SyncResult {
+                        success: false,
+                        message: format!("Sync failed: {e}"),
+                    })
+                }
             };
 
             self.rt.block_on(async {
@@ -713,7 +749,7 @@ pub mod pg {
                         .map(|ts| DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now));
                     let recur: Option<String> = task.get_value("recur").map(|s| s.to_string());
 
-                    let has_next = tags.iter().any(|t| t == "NEXT");
+                    let has_next = tags.iter().any(|t| t == "next");
                     let urgency = compute_urgency(
                         is_active,
                         is_waiting,
@@ -837,7 +873,9 @@ pub mod pg {
 
             match sort_by {
                 SortField::Urgency => tasks.sort_by(|a, b| {
-                    b.urgency.partial_cmp(&a.urgency).unwrap_or(std::cmp::Ordering::Equal)
+                    b.urgency
+                        .partial_cmp(&a.urgency)
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 }),
                 SortField::DueDate => tasks.sort_by(|a, b| match (&a.due, &b.due) {
                     (Some(a_due), Some(b_due)) => a_due.cmp(b_due),
@@ -1057,10 +1095,15 @@ mod tests {
     fn test_update_description() {
         let mut mgr = setup();
         let task = mgr.create_task("Original").unwrap();
-        let updated = mgr.update_task(&task.uuid, TaskUpdate {
-            description: Some("Updated".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let updated = mgr
+            .update_task(
+                &task.uuid,
+                TaskUpdate {
+                    description: Some("Updated".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert_eq!(updated.description, "Updated");
     }
 
@@ -1068,10 +1111,13 @@ mod tests {
     fn test_update_empty_description_fails() {
         let mut mgr = setup();
         let task = mgr.create_task("Original").unwrap();
-        let result = mgr.update_task(&task.uuid, TaskUpdate {
-            description: Some("".to_string()),
-            ..Default::default()
-        });
+        let result = mgr.update_task(
+            &task.uuid,
+            TaskUpdate {
+                description: Some("".to_string()),
+                ..Default::default()
+            },
+        );
         assert!(result.is_err());
     }
 
@@ -1079,16 +1125,26 @@ mod tests {
     fn test_update_project() {
         let mut mgr = setup();
         let task = mgr.create_task("With project").unwrap();
-        let updated = mgr.update_task(&task.uuid, TaskUpdate {
-            project: Some("work".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let updated = mgr
+            .update_task(
+                &task.uuid,
+                TaskUpdate {
+                    project: Some("work".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert_eq!(updated.project.as_deref(), Some("work"));
 
-        let cleared = mgr.update_task(&task.uuid, TaskUpdate {
-            project: Some("".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let cleared = mgr
+            .update_task(
+                &task.uuid,
+                TaskUpdate {
+                    project: Some("".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert!(cleared.project.is_none());
     }
 
@@ -1096,10 +1152,15 @@ mod tests {
     fn test_update_tags() {
         let mut mgr = setup();
         let task = mgr.create_task("Tagged task").unwrap();
-        let updated = mgr.update_task(&task.uuid, TaskUpdate {
-            tags: Some(vec!["urgent".to_string(), "home".to_string()]),
-            ..Default::default()
-        }).unwrap();
+        let updated = mgr
+            .update_task(
+                &task.uuid,
+                TaskUpdate {
+                    tags: Some(vec!["urgent".to_string(), "home".to_string()]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert!(updated.tags.contains(&"urgent".to_string()));
         assert!(updated.tags.contains(&"home".to_string()));
     }
@@ -1108,10 +1169,15 @@ mod tests {
     fn test_update_priority() {
         let mut mgr = setup();
         let task = mgr.create_task("Priority task").unwrap();
-        let updated = mgr.update_task(&task.uuid, TaskUpdate {
-            priority: Some("H".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let updated = mgr
+            .update_task(
+                &task.uuid,
+                TaskUpdate {
+                    priority: Some("H".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert_eq!(updated.priority.as_deref(), Some("H"));
     }
 
@@ -1119,16 +1185,26 @@ mod tests {
     fn test_update_due_date() {
         let mut mgr = setup();
         let task = mgr.create_task("Due task").unwrap();
-        let updated = mgr.update_task(&task.uuid, TaskUpdate {
-            due: Some("2026-12-31T00:00:00+00:00".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let updated = mgr
+            .update_task(
+                &task.uuid,
+                TaskUpdate {
+                    due: Some("2026-12-31T00:00:00+00:00".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert!(updated.due.is_some());
 
-        let cleared = mgr.update_task(&task.uuid, TaskUpdate {
-            due: Some("".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let cleared = mgr
+            .update_task(
+                &task.uuid,
+                TaskUpdate {
+                    due: Some("".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert!(cleared.due.is_none());
     }
 
@@ -1136,17 +1212,27 @@ mod tests {
     fn test_update_wait_date() {
         let mut mgr = setup();
         let task = mgr.create_task("Wait task").unwrap();
-        let updated = mgr.update_task(&task.uuid, TaskUpdate {
-            wait: Some("2026-06-01T00:00:00+00:00".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let updated = mgr
+            .update_task(
+                &task.uuid,
+                TaskUpdate {
+                    wait: Some("2026-06-01T00:00:00+00:00".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert!(updated.wait.is_some());
         assert!(updated.is_waiting);
 
-        let cleared = mgr.update_task(&task.uuid, TaskUpdate {
-            wait: Some("".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let cleared = mgr
+            .update_task(
+                &task.uuid,
+                TaskUpdate {
+                    wait: Some("".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert!(cleared.wait.is_none());
         assert!(!cleared.is_waiting);
     }
@@ -1155,16 +1241,26 @@ mod tests {
     fn test_update_recur() {
         let mut mgr = setup();
         let task = mgr.create_task("Recurring task").unwrap();
-        let updated = mgr.update_task(&task.uuid, TaskUpdate {
-            recur: Some("weekly".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let updated = mgr
+            .update_task(
+                &task.uuid,
+                TaskUpdate {
+                    recur: Some("weekly".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert_eq!(updated.recur.as_deref(), Some("weekly"));
 
-        let cleared = mgr.update_task(&task.uuid, TaskUpdate {
-            recur: Some("".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let cleared = mgr
+            .update_task(
+                &task.uuid,
+                TaskUpdate {
+                    recur: Some("".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert!(cleared.recur.is_none());
     }
 
@@ -1172,10 +1268,13 @@ mod tests {
     fn test_update_invalid_due_date_fails() {
         let mut mgr = setup();
         let task = mgr.create_task("Bad date").unwrap();
-        let result = mgr.update_task(&task.uuid, TaskUpdate {
-            due: Some("not-a-date".to_string()),
-            ..Default::default()
-        });
+        let result = mgr.update_task(
+            &task.uuid,
+            TaskUpdate {
+                due: Some("not-a-date".to_string()),
+                ..Default::default()
+            },
+        );
         assert!(result.is_err());
     }
 
@@ -1250,10 +1349,12 @@ mod tests {
         let t2 = mgr.create_task("Done task").unwrap();
         mgr.complete_task(&t2.uuid).unwrap();
 
-        let pending = mgr.list_tasks_filtered(TaskFilter {
-            status: Some("pending".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let pending = mgr
+            .list_tasks_filtered(TaskFilter {
+                status: Some("pending".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
         assert!(pending.iter().all(|t| t.status == "pending"));
         assert!(pending.iter().any(|t| t.uuid == t1.uuid));
         assert!(!pending.iter().any(|t| t.uuid == t2.uuid));
@@ -1263,16 +1364,22 @@ mod tests {
     fn test_filter_by_project() {
         let mut mgr = setup();
         let t1 = mgr.create_task("Work task").unwrap();
-        mgr.update_task(&t1.uuid, TaskUpdate {
-            project: Some("work".to_string()),
-            ..Default::default()
-        }).unwrap();
+        mgr.update_task(
+            &t1.uuid,
+            TaskUpdate {
+                project: Some("work".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         mgr.create_task("Personal task").unwrap();
 
-        let work = mgr.list_tasks_filtered(TaskFilter {
-            project: Some("work".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let work = mgr
+            .list_tasks_filtered(TaskFilter {
+                project: Some("work".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].project.as_deref(), Some("work"));
     }
@@ -1281,16 +1388,22 @@ mod tests {
     fn test_filter_by_tag() {
         let mut mgr = setup();
         let t1 = mgr.create_task("Tagged").unwrap();
-        mgr.update_task(&t1.uuid, TaskUpdate {
-            tags: Some(vec!["important".to_string()]),
-            ..Default::default()
-        }).unwrap();
+        mgr.update_task(
+            &t1.uuid,
+            TaskUpdate {
+                tags: Some(vec!["important".to_string()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         mgr.create_task("Untagged").unwrap();
 
-        let tagged = mgr.list_tasks_filtered(TaskFilter {
-            tag: Some("important".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let tagged = mgr
+            .list_tasks_filtered(TaskFilter {
+                tag: Some("important".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(tagged.len(), 1);
         assert!(tagged[0].tags.contains(&"important".to_string()));
     }
@@ -1306,7 +1419,9 @@ mod tests {
         mgr.create_task("Apple").unwrap();
         mgr.create_task("Mango").unwrap();
 
-        let sorted = mgr.list_tasks_sorted(TaskFilter::default(), SortField::Description).unwrap();
+        let sorted = mgr
+            .list_tasks_sorted(TaskFilter::default(), SortField::Description)
+            .unwrap();
         let descs: Vec<&str> = sorted.iter().map(|t| t.description.as_str()).collect();
         let mut expected = descs.clone();
         expected.sort();
@@ -1319,11 +1434,34 @@ mod tests {
         let t_low = mgr.create_task("Low priority").unwrap();
         let t_high = mgr.create_task("High priority").unwrap();
         let t_med = mgr.create_task("Medium priority").unwrap();
-        mgr.update_task(&t_low.uuid, TaskUpdate { priority: Some("L".to_string()), ..Default::default() }).unwrap();
-        mgr.update_task(&t_high.uuid, TaskUpdate { priority: Some("H".to_string()), ..Default::default() }).unwrap();
-        mgr.update_task(&t_med.uuid, TaskUpdate { priority: Some("M".to_string()), ..Default::default() }).unwrap();
+        mgr.update_task(
+            &t_low.uuid,
+            TaskUpdate {
+                priority: Some("L".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        mgr.update_task(
+            &t_high.uuid,
+            TaskUpdate {
+                priority: Some("H".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        mgr.update_task(
+            &t_med.uuid,
+            TaskUpdate {
+                priority: Some("M".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let sorted = mgr.list_tasks_sorted(TaskFilter::default(), SortField::Priority).unwrap();
+        let sorted = mgr
+            .list_tasks_sorted(TaskFilter::default(), SortField::Priority)
+            .unwrap();
         assert_eq!(sorted[0].priority.as_deref(), Some("H"));
     }
 
@@ -1332,13 +1470,32 @@ mod tests {
         let mut mgr = setup();
         let t1 = mgr.create_task("Due later").unwrap();
         let t2 = mgr.create_task("Due sooner").unwrap();
-        mgr.update_task(&t1.uuid, TaskUpdate { due: Some("2027-01-01T00:00:00+00:00".to_string()), ..Default::default() }).unwrap();
-        mgr.update_task(&t2.uuid, TaskUpdate { due: Some("2026-06-01T00:00:00+00:00".to_string()), ..Default::default() }).unwrap();
+        mgr.update_task(
+            &t1.uuid,
+            TaskUpdate {
+                due: Some("2027-01-01T00:00:00+00:00".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        mgr.update_task(
+            &t2.uuid,
+            TaskUpdate {
+                due: Some("2026-06-01T00:00:00+00:00".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let sorted = mgr.list_tasks_sorted(TaskFilter {
-            status: Some("pending".to_string()),
-            ..Default::default()
-        }, SortField::DueDate).unwrap();
+        let sorted = mgr
+            .list_tasks_sorted(
+                TaskFilter {
+                    status: Some("pending".to_string()),
+                    ..Default::default()
+                },
+                SortField::DueDate,
+            )
+            .unwrap();
 
         let due_tasks: Vec<_> = sorted.iter().filter(|t| t.due.is_some()).collect();
         assert!(due_tasks.len() >= 2);
@@ -1352,18 +1509,10 @@ mod tests {
     #[test]
     fn test_configure_sync_valid() {
         let mut mgr = setup();
-        let result = mgr.configure_sync(
-            "https://sync.example.com",
-            "mysecret",
-            "client-abc",
-        );
+        let result = mgr.configure_sync("https://sync.example.com", "mysecret", "client-abc");
         assert!(result.is_ok());
 
-        let result2 = mgr.configure_sync(
-            "https://sync2.example.com",
-            "newsecret",
-            "client-xyz",
-        );
+        let result2 = mgr.configure_sync("https://sync2.example.com", "newsecret", "client-xyz");
         assert!(result2.is_ok());
     }
 
