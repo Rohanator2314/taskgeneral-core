@@ -13,6 +13,9 @@ env:
 jobs:
   test:
     name: Test
+    environment: Tests
+    env:
+      TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
