@@ -715,7 +715,7 @@ pub mod pg {
                         .map(|ts| DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now));
                     let recur: Option<String> = task.get_value("recur").map(|s| s.to_string());
 
-                    let has_next = tags.iter().any(|t| t == "next");
+                    let has_next = tags.iter().any(|t| t == "NEXT");
                     let urgency = compute_urgency(
                         is_active,
                         is_waiting,

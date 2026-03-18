@@ -632,7 +632,7 @@ fn calculate_urgency(task: &Task) -> f64 {
     let has_next = task
         .get_tags()
         .filter(|t| !t.is_synthetic())
-        .any(|t| t.to_string() == "next");
+        .any(|t| t.to_string() == "NEXT");
     let has_project = task.get_value("project").is_some();
 
     15.0 * if has_next { 1.0 } else { 0.0 }
