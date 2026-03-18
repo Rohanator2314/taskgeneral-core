@@ -1310,7 +1310,8 @@ mod tests {
         let task = mgr.create_task("Delete me").unwrap();
         mgr.delete_task(&task.uuid).unwrap();
         let fetched = mgr.get_task(&task.uuid).unwrap();
-        assert!(fetched.is_none());
+        assert!(fetched.is_some());
+        assert_eq!(fetched.unwrap().status, "deleted");
     }
 
     #[test]
