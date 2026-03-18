@@ -27,16 +27,14 @@ pub mod pg {
         tags: &[String],
         project: &Option<String>,
     ) -> f64 {
-        let p = priority.as_deref().unwrap_or("");
         let due_score = if let Some(d) = due {
-            let secs = d.signed_duration_since(Utc::now()).num_seconds() as f64;
-            let days = secs / 86400.0;
-            if days < 0.0 {
+            let days_overdue = (Utc::now() - *d).num_seconds() as f64 / 86400.0;
+            if days_overdue >= 7.0 {
                 12.0
-            } else if days < 7.0 {
-                12.0 * (1.0 - days / 7.0)
+            } else if days_overdue >= -14.0 {
+                12.0 * (((days_overdue + 14.0) * 0.8 / 21.0) + 0.2)
             } else {
-                0.0
+                12.0 * 0.2
             }
         } else {
             0.0
@@ -55,11 +53,11 @@ pub mod pg {
         };
         15.0 * if has_next { 1.0 } else { 0.0 }
             + due_score
-            + 6.0 * if p == "H" { 1.0 } else { 0.0 }
+            + 6.0 * if priority.as_deref() == Some(&"H".to_string()) { 1.0 } else { 0.0 }
             + 4.0 * if is_active { 1.0 } else { 0.0 }
-            + 3.9 * if p == "M" { 1.0 } else { 0.0 }
+            + 3.9 * if priority.as_deref() == Some(&"M".to_string()) { 1.0 } else { 0.0 }
             + age_score
-            + 1.8 * if p == "L" { 1.0 } else { 0.0 }
+            + 1.8 * if priority.as_deref() == Some(&"L".to_string()) { 1.0 } else { 0.0 }
             + tag_score
             + 1.0 * if project.is_some() { 1.0 } else { 0.0 }
             + (-3.0) * if is_waiting { 1.0 } else { 0.0 }
