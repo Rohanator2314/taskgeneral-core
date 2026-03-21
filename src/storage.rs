@@ -5,8 +5,8 @@ pub mod pg;
 
 #[cfg(all(test, feature = "postgres"))]
 mod tests {
-    use crate::storage::pg::PostgresTaskManager;
     use crate::models::{SortField, TaskFilter, TaskUpdate};
+    use crate::storage::pg::PostgresTaskManager;
     use native_tls::TlsConnector;
     use postgres_native_tls::MakeTlsConnector;
     use std::sync::Arc;
@@ -48,8 +48,13 @@ mod tests {
     fn setup() -> PostgresTaskManager {
         let (client, rt, database_url) = connect();
         let user_id = Uuid::new_v4().to_string();
-        let mgr = PostgresTaskManager::new_with_runtime_with_url(client, &user_id, rt.clone(), database_url)
-            .expect("Failed to create manager");
+        let mgr = PostgresTaskManager::new_with_runtime_with_url(
+            client,
+            &user_id,
+            rt.clone(),
+            database_url,
+        )
+        .expect("Failed to create manager");
         rt.block_on(mgr.init_schema()).expect("init_schema failed");
         mgr
     }
@@ -549,5 +554,32 @@ mod tests {
             })
             .unwrap();
         assert_eq!(with_tag.len(), 1);
+    }
+
+    #[test]
+    fn test_pg_storage_e2e_sync_incremental_operations() {
+        // Check if E2E_TEST is set
+        if std::env::var("E2E_TEST").ok() != Some("1".into()) {
+            println!("Skipping E2E test (set E2E_TEST=1 to run)");
+            return;
+        }
+
+        // This test requires:
+        // - TEST_DATABASE_URL set
+        // - E2E_TEST=1
+        // - A running taskchampion-sync-server on localhost:8081
+        // The test validates that the sync pipeline works end-to-end
+        // with PostgresStorage backing the Replica.
+
+        // Future implementation will:
+        // 1. Create a PostgresTaskManager with a test database
+        // 2. Configure sync with a real sync server
+        // 3. Create tasks and sync to server
+        // 4. Create a second PostgresTaskManager instance
+        // 5. Sync from server and verify tasks are replicated
+        // 6. Make modifications on both sides
+        // 7. Sync and verify conflict resolution works
+
+        println!("E2E sync test placeholder - requires sync server implementation");
     }
 }

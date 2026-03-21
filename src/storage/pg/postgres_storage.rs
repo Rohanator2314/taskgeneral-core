@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use taskchampion::storage::{Storage, StorageTxn, TaskMap};
 use taskchampion::server::VersionId;
+use taskchampion::storage::{Storage, StorageTxn, TaskMap};
 use taskchampion::{Error as TcError, Operation, Uuid};
 use tokio_postgres::{Client, NoTls};
 
@@ -22,7 +22,7 @@ impl PostgresStorage {
             }
         });
 
-        Ok(PostgresStorage { 
+        Ok(PostgresStorage {
             database_url,
             client,
             user_id,
@@ -40,7 +40,9 @@ impl PostgresStorage {
 
 #[async_trait]
 impl Storage for PostgresStorage {
-    async fn txn<'a>(&'a mut self) -> std::result::Result<Box<dyn StorageTxn + Send + 'a>, TcError> {
+    async fn txn<'a>(
+        &'a mut self,
+    ) -> std::result::Result<Box<dyn StorageTxn + Send + 'a>, TcError> {
         Ok(Box::new(PostgresTxn::new(&self.client, self.user_id)))
     }
 }
@@ -62,8 +64,9 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
         let query = "SELECT task_map FROM tc_tasks WHERE user_id = $1 AND uuid = $2";
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
         let task_uuid = uuid::Uuid::from_bytes(*uuid.as_bytes());
-        
-        let result = self.client
+
+        let result = self
+            .client
             .query_opt(query, &[&user_uuid, &task_uuid])
             .await
             .map_err(|e| TcError::Database(format!("Failed to get task: {}", e)))?;
@@ -81,8 +84,9 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
 
     async fn get_pending_tasks(&mut self) -> std::result::Result<Vec<(Uuid, TaskMap)>, TcError> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
-        
-        let rows = self.client
+
+        let rows = self
+            .client
             .query(
                 "SELECT t.uuid, t.task_map 
                  FROM tc_tasks t 
@@ -99,10 +103,10 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
             let task_uuid: uuid::Uuid = row.get("uuid");
             let uuid = Uuid::from_bytes(*task_uuid.as_bytes());
             let task_map_json: serde_json::Value = row.get("task_map");
-            
+
             let task_map: TaskMap = serde_json::from_value(task_map_json)
                 .map_err(|e| TcError::Database(format!("Failed to deserialize task_map: {}", e)))?;
-            
+
             tasks.push((uuid, task_map));
         }
 
@@ -147,7 +151,8 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
         let task_uuid = uuid::Uuid::from_bytes(*uuid.as_bytes());
 
-        let result = self.client
+        let result = self
+            .client
             .execute(
                 "DELETE FROM tc_tasks WHERE user_id = $1 AND uuid = $2",
                 &[&user_uuid, &task_uuid],
@@ -160,8 +165,9 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
 
     async fn all_tasks(&mut self) -> std::result::Result<Vec<(Uuid, TaskMap)>, TcError> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
-        
-        let rows = self.client
+
+        let rows = self
+            .client
             .query(
                 "SELECT uuid, task_map FROM tc_tasks WHERE user_id = $1",
                 &[&user_uuid],
@@ -174,10 +180,10 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
             let task_uuid: uuid::Uuid = row.get("uuid");
             let uuid = Uuid::from_bytes(*task_uuid.as_bytes());
             let task_map_json: serde_json::Value = row.get("task_map");
-            
+
             let task_map: TaskMap = serde_json::from_value(task_map_json)
                 .map_err(|e| TcError::Database(format!("Failed to deserialize task_map: {}", e)))?;
-            
+
             tasks.push((uuid, task_map));
         }
 
@@ -186,8 +192,9 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
 
     async fn all_task_uuids(&mut self) -> std::result::Result<Vec<Uuid>, TcError> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
-        
-        let rows = self.client
+
+        let rows = self
+            .client
             .query(
                 "SELECT uuid FROM tc_tasks WHERE user_id = $1",
                 &[&user_uuid],
@@ -206,7 +213,8 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
     }
 
     async fn base_version(&mut self) -> std::result::Result<VersionId, TcError> {
-        let row = self.client
+        let row = self
+            .client
             .query_opt(
                 "SELECT value FROM sync_meta WHERE user_id = $1 AND key = 'base_version'",
                 &[&self.user_id],
@@ -228,7 +236,7 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
 
     async fn set_base_version(&mut self, version: VersionId) -> std::result::Result<(), TcError> {
         let version_str = version.to_string();
-        
+
         self.client
             .execute(
                 "INSERT INTO sync_meta (user_id, key, value) VALUES ($1, $2, $3)
@@ -241,11 +249,15 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
         Ok(())
     }
 
-    async fn get_task_operations(&mut self, uuid: Uuid) -> std::result::Result<Vec<Operation>, TcError> {
+    async fn get_task_operations(
+        &mut self,
+        uuid: Uuid,
+    ) -> std::result::Result<Vec<Operation>, TcError> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
         let task_uuid = uuid::Uuid::from_bytes(*uuid.as_bytes());
-        
-        let rows = self.client
+
+        let rows = self
+            .client
             .query(
                 "SELECT data FROM operations WHERE user_id = $1 AND uuid = $2 ORDER BY id",
                 &[&user_uuid, &task_uuid],
@@ -256,8 +268,9 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
         let mut operations = Vec::new();
         for row in rows {
             let data: serde_json::Value = row.get("data");
-            let operation: Operation = serde_json::from_value(data)
-                .map_err(|e| TcError::Database(format!("Failed to deserialize operation: {}", e)))?;
+            let operation: Operation = serde_json::from_value(data).map_err(|e| {
+                TcError::Database(format!("Failed to deserialize operation: {}", e))
+            })?;
             operations.push(operation);
         }
 
@@ -266,8 +279,9 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
 
     async fn unsynced_operations(&mut self) -> std::result::Result<Vec<Operation>, TcError> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
-        
-        let rows = self.client
+
+        let rows = self
+            .client
             .query(
                 "SELECT data FROM operations WHERE user_id = $1 AND synced = false ORDER BY id",
                 &[&user_uuid],
@@ -278,8 +292,9 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
         let mut operations = Vec::new();
         for row in rows {
             let data: serde_json::Value = row.get("data");
-            let operation: Operation = serde_json::from_value(data)
-                .map_err(|e| TcError::Database(format!("Failed to deserialize operation: {}", e)))?;
+            let operation: Operation = serde_json::from_value(data).map_err(|e| {
+                TcError::Database(format!("Failed to deserialize operation: {}", e))
+            })?;
             operations.push(operation);
         }
 
@@ -288,14 +303,17 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
 
     async fn num_unsynced_operations(&mut self) -> std::result::Result<usize, TcError> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
-        
-        let row = self.client
+
+        let row = self
+            .client
             .query_one(
                 "SELECT COUNT(*) as count FROM operations WHERE user_id = $1 AND synced = false",
                 &[&user_uuid],
             )
             .await
-            .map_err(|e| TcError::Database(format!("Failed to count unsynced operations: {}", e)))?;
+            .map_err(|e| {
+                TcError::Database(format!("Failed to count unsynced operations: {}", e))
+            })?;
 
         let count: i64 = row.get("count");
         Ok(count as usize)
@@ -303,17 +321,17 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
 
     async fn add_operation(&mut self, op: Operation) -> std::result::Result<(), TcError> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
-        
+
         let task_uuid = match &op {
             Operation::Create { uuid } => uuid::Uuid::from_bytes(*uuid.as_bytes()),
             Operation::Delete { uuid, .. } => uuid::Uuid::from_bytes(*uuid.as_bytes()),
             Operation::Update { uuid, .. } => uuid::Uuid::from_bytes(*uuid.as_bytes()),
             Operation::UndoPoint => uuid::Uuid::nil(),
         };
-        
+
         let data = serde_json::to_value(&op)
             .map_err(|e| TcError::Database(format!("Failed to serialize operation: {}", e)))?;
-        
+
         self.client
             .execute(
                 "INSERT INTO operations (user_id, uuid, data, synced) VALUES ($1, $2, $3, false)",
@@ -327,10 +345,10 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
 
     async fn remove_operation(&mut self, op: Operation) -> std::result::Result<(), TcError> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
-        
+
         let data = serde_json::to_value(&op)
             .map_err(|e| TcError::Database(format!("Failed to serialize operation: {}", e)))?;
-        
+
         self.client
             .execute(
                 "DELETE FROM operations WHERE user_id = $1 AND data = $2",
@@ -344,14 +362,16 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
 
     async fn sync_complete(&mut self) -> std::result::Result<(), TcError> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
-        
+
         self.client
             .execute(
                 "UPDATE operations SET synced = true WHERE user_id = $1 AND synced = false",
                 &[&user_uuid],
             )
             .await
-            .map_err(|e| TcError::Database(format!("Failed to mark operations as synced: {}", e)))?;
+            .map_err(|e| {
+                TcError::Database(format!("Failed to mark operations as synced: {}", e))
+            })?;
 
         Ok(())
     }
@@ -365,32 +385,32 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
             )
             .await
             .map_err(|e| TcError::Database(format!("Failed to query working set: {}", e)))?;
-        
+
         // Start with None at index 0 for 1-based indexing
         let mut result = vec![None];
-        
+
         for row in rows {
             let task_uuid: uuid::Uuid = row.get("task_uuid");
             let position: i32 = row.get("position");
-            
+
             // Convert uuid::Uuid to taskchampion::Uuid
             let tc_uuid = Uuid::from_bytes(*task_uuid.as_bytes());
-            
+
             // Ensure the vector is large enough for this position
             while result.len() <= position as usize {
                 result.push(None);
             }
-            
+
             result[position as usize] = Some(tc_uuid);
         }
-        
+
         Ok(result)
     }
 
     async fn add_to_working_set(&mut self, uuid: Uuid) -> std::result::Result<usize, TcError> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
         let task_uuid = uuid::Uuid::from_bytes(*uuid.as_bytes());
-        
+
         // Get the maximum position
         let max_position_row = self.client
             .query_opt(
@@ -399,13 +419,11 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
             )
             .await
             .map_err(|e| TcError::Database(format!("Failed to query max position: {}", e)))?;
-        
-        let max_position: i32 = max_position_row
-            .map(|row| row.get("max_pos"))
-            .unwrap_or(0);
-        
+
+        let max_position: i32 = max_position_row.map(|row| row.get("max_pos")).unwrap_or(0);
+
         let new_position = max_position + 1;
-        
+
         // Insert the new item
         self.client
             .execute(
@@ -415,28 +433,38 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
             )
             .await
             .map_err(|e| TcError::Database(format!("Failed to add to working set: {}", e)))?;
-        
+
         Ok(new_position as usize)
     }
 
-    async fn set_working_set_item(&mut self, index: usize, uuid: Option<Uuid>) -> std::result::Result<(), TcError> {
+    async fn set_working_set_item(
+        &mut self,
+        index: usize,
+        uuid: Option<Uuid>,
+    ) -> std::result::Result<(), TcError> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
         let position = index as i32;
-        
+
         match uuid {
             Some(task_id) => {
                 let task_uuid = uuid::Uuid::from_bytes(*task_id.as_bytes());
-                
+
                 // First, check if there's an existing item at this position
-                let existing = self.client
+                let existing = self
+                    .client
                     .query_opt(
                         "SELECT task_uuid FROM tg_working_set WHERE user_id = $1 AND position = $2",
                         &[&user_uuid, &position],
                     )
                     .await
-                    .map_err(|e| TcError::Database(format!("Failed to check existing working set item: {}", e)))?;
-                
-                if let Some(_) = existing {
+                    .map_err(|e| {
+                        TcError::Database(format!(
+                            "Failed to check existing working set item: {}",
+                            e
+                        ))
+                    })?;
+
+                if existing.is_some() {
                     // Update existing item
                     self.client
                         .execute(
@@ -464,16 +492,18 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
                         &[&user_uuid, &position],
                     )
                     .await
-                    .map_err(|e| TcError::Database(format!("Failed to delete working set item: {}", e)))?;
+                    .map_err(|e| {
+                        TcError::Database(format!("Failed to delete working set item: {}", e))
+                    })?;
             }
         }
-        
+
         Ok(())
     }
 
     async fn clear_working_set(&mut self) -> std::result::Result<(), TcError> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
-        
+
         self.client
             .execute(
                 "DELETE FROM tg_working_set WHERE user_id = $1",
@@ -481,13 +511,32 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
             )
             .await
             .map_err(|e| TcError::Database(format!("Failed to clear working set: {}", e)))?;
-        
+
         Ok(())
     }
 
     async fn commit(&mut self) -> std::result::Result<(), TcError> {
-        // PostgresStorage uses individual auto-committed queries rather than explicit transactions.
-        // Each query is automatically committed, so this is a no-op.
         Ok(())
+    }
+
+    async fn is_empty(&mut self) -> std::result::Result<bool, TcError> {
+        let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
+
+        let row = self
+            .client
+            .query_opt(
+                "SELECT COUNT(*) as count FROM tc_tasks WHERE user_id = $1",
+                &[&user_uuid],
+            )
+            .await
+            .map_err(|e| TcError::Database(format!("Failed to check is_empty: {}", e)))?;
+
+        match row {
+            Some(r) => {
+                let count: i64 = r.get("count");
+                Ok(count == 0)
+            }
+            None => Ok(true),
+        }
     }
 }

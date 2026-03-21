@@ -8,10 +8,7 @@ use tokio::runtime::Runtime;
 use tokio_postgres::Client;
 use uuid::Uuid;
 
-use taskchampion::{
-    server::ServerConfig, Operations, Replica, Status, Tag,
-    Uuid as TcUuid,
-};
+use taskchampion::{server::ServerConfig, Operations, Replica, Status, Tag, Uuid as TcUuid};
 
 pub mod postgres_storage;
 pub mod schema;
@@ -21,23 +18,32 @@ use schema::init_tc_schema;
 
 /// Create a PostgresStorage for sync operations.
 /// This creates an embedded runtime similar to PostgresTaskManager::new.
-pub fn create_postgres_storage(database_url: &str, user_id: Uuid) -> crate::error::Result<PostgresStorage> {
+pub fn create_postgres_storage(
+    database_url: &str,
+    user_id: Uuid,
+) -> crate::error::Result<PostgresStorage> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| crate::error::TaskError::IoError(e.to_string()))?;
-    
+
     let tc_uuid = TcUuid::from_bytes(*user_id.as_bytes());
-    
+
     let storage = rt.block_on(async {
         PostgresStorage::new(database_url.to_string(), tc_uuid)
             .await
-            .map_err(|e| crate::error::TaskError::StorageError(format!("Failed to create PostgresStorage: {}", e)))
+            .map_err(|e| {
+                crate::error::TaskError::StorageError(format!(
+                    "Failed to create PostgresStorage: {}",
+                    e
+                ))
+            })
     })?;
-    
+
     Ok(storage)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute_urgency(
     is_active: bool,
     is_waiting: bool,
@@ -75,21 +81,21 @@ fn compute_urgency(
     15.0 * if has_next { 1.0 } else { 0.0 }
         + due_score
         + 6.0
-            * if priority.as_deref() == Some(&"H".to_string()) {
+            * if priority.as_deref() == Some("H") {
                 1.0
             } else {
                 0.0
             }
         + 4.0 * if is_active { 1.0 } else { 0.0 }
         + 3.9
-            * if priority.as_deref() == Some(&"M".to_string()) {
+            * if priority.as_deref() == Some("M") {
                 1.0
             } else {
                 0.0
             }
         + age_score
         + 1.8
-            * if priority.as_deref() == Some(&"L".to_string()) {
+            * if priority.as_deref() == Some("L") {
                 1.0
             } else {
                 0.0
@@ -111,9 +117,12 @@ impl PostgresTaskManager {
     fn resolve_database_url(explicit: Option<String>) -> Result<String> {
         match explicit {
             Some(url) if !url.is_empty() => Ok(url),
-            _ => std::env::var("DATABASE_URL")
-                .map_err(|e| TaskError::StorageError(format!(
-                    "DATABASE_URL env var required when database_url not provided: {}", e))),
+            _ => std::env::var("DATABASE_URL").map_err(|e| {
+                TaskError::StorageError(format!(
+                    "DATABASE_URL env var required when database_url not provided: {}",
+                    e
+                ))
+            }),
         }
     }
 
@@ -126,7 +135,12 @@ impl PostgresTaskManager {
     }
 
     /// Create from an already-connected client and a shared runtime, with explicit database URL.
-    pub fn new_with_runtime_with_url(client: Client, user_id: &str, rt: Arc<Runtime>, database_url: String) -> Result<Self> {
+    pub fn new_with_runtime_with_url(
+        client: Client,
+        user_id: &str,
+        rt: Arc<Runtime>,
+        database_url: String,
+    ) -> Result<Self> {
         let user_uuid = Uuid::parse_str(user_id)
             .map_err(|e| TaskError::InvalidUuid(format!("Invalid user_id: {}", e)))?;
         Ok(PostgresTaskManager {
@@ -143,7 +157,12 @@ impl PostgresTaskManager {
     }
 
     /// Create with an Arc<Client>, explicit database URL.
-    pub fn new_arc_with_url(client: Arc<Client>, user_id: &str, rt: Arc<Runtime>, database_url: String) -> Result<Self> {
+    pub fn new_arc_with_url(
+        client: Arc<Client>,
+        user_id: &str,
+        rt: Arc<Runtime>,
+        database_url: String,
+    ) -> Result<Self> {
         let user_uuid = Uuid::parse_str(user_id)
             .map_err(|e| TaskError::InvalidUuid(format!("Invalid user_id: {}", e)))?;
         Ok(PostgresTaskManager {
@@ -202,9 +221,7 @@ impl PostgresTaskManager {
                 &[],
             )
             .await
-            .map_err(|e| {
-                TaskError::StorageError(format!("Failed to create tasks table: {e}"))
-            })?;
+            .map_err(|e| TaskError::StorageError(format!("Failed to create tasks table: {e}")))?;
 
         self.client
             .execute(
@@ -604,9 +621,7 @@ impl PostgresTaskManager {
                     &[&user_id],
                 )
                 .await
-                .map_err(|e| {
-                    TaskError::StorageError(format!("Failed to get sync config: {e}"))
-                })?;
+                .map_err(|e| TaskError::StorageError(format!("Failed to get sync config: {e}")))?;
             Ok::<Option<(Option<String>, Option<String>)>, TaskError>(row.map(|r| {
                 let server_url: Option<String> = r.get("server_url");
                 let client_id: Option<String> = r.get("client_id");
@@ -627,9 +642,7 @@ impl PostgresTaskManager {
                     &[&user_id],
                 )
                 .await
-                .map_err(|e| {
-                    TaskError::StorageError(format!("Failed to read sync config: {e}"))
-                })
+                .map_err(|e| TaskError::StorageError(format!("Failed to read sync config: {e}")))
         })?;
 
         let row = match row {
@@ -646,17 +659,17 @@ impl PostgresTaskManager {
         let client_id_str: Option<String> = row.get("client_id");
         let secret_str: Option<String> = row.get("encryption_secret_encrypted");
 
-        let (server_url, client_id_str, secret_str) =
-            match (server_url, client_id_str, secret_str) {
-                (Some(u), Some(c), Some(s)) => (u, c, s),
-                _ => {
-                    return Ok(SyncResult {
-                        success: false,
-                        message: "Sync config incomplete (missing url, client_id, or secret)"
-                            .to_string(),
-                    })
-                }
-            };
+        let (server_url, client_id_str, secret_str) = match (server_url, client_id_str, secret_str)
+        {
+            (Some(u), Some(c), Some(s)) => (u, c, s),
+            _ => {
+                return Ok(SyncResult {
+                    success: false,
+                    message: "Sync config incomplete (missing url, client_id, or secret)"
+                        .to_string(),
+                })
+            }
+        };
 
         let tc_client_id = TcUuid::parse_str(&client_id_str)
             .map_err(|e| TaskError::StorageError(format!("Invalid client_id UUID: {e}")))?;
@@ -674,13 +687,16 @@ impl PostgresTaskManager {
         })?;
 
         let result = self.rt.block_on(async {
-            init_tc_schema(&self.client).await
-                .map_err(|e| taskchampion::Error::Database(format!("Failed to init schema: {}", e)))?;
+            init_tc_schema(&self.client).await.map_err(|e| {
+                taskchampion::Error::Database(format!("Failed to init schema: {}", e))
+            })?;
 
             let tc_user_id = TcUuid::from_bytes(*user_id.as_bytes());
             let storage = PostgresStorage::new(self.database_url.clone(), tc_user_id)
                 .await
-                .map_err(|e| taskchampion::Error::Database(format!("Failed to create storage: {}", e)))?;
+                .map_err(|e| {
+                    taskchampion::Error::Database(format!("Failed to create storage: {}", e))
+                })?;
             let mut replica = Replica::new(storage);
 
             for row in &pg_tasks {
