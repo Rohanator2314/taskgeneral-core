@@ -457,6 +457,60 @@ mod tests {
         assert!(result.message.contains("not configured"));
     }
 
+    #[test]
+    fn test_sync_incremental_skips_existing_tasks() {
+        let (mgr_client, rt, database_url) = connect();
+        let (test_client, _rt2, _url2) = connect();
+        
+        let user_id_uuid = Uuid::new_v4();
+        let user_id = user_id_uuid.to_string();
+        
+        let mut mgr = PostgresTaskManager::new_with_runtime_with_url(
+            mgr_client,
+            &user_id,
+            rt.clone(),
+            database_url,
+        )
+        .expect("Failed to create manager");
+        rt.block_on(mgr.init_schema()).expect("init_schema failed");
+        
+        mgr.create_task("Task 1").unwrap();
+        mgr.create_task("Task 2").unwrap();
+        mgr.create_task("Task 3").unwrap();
+        
+        mgr.configure_sync(
+            "https://fake-sync-server.example.com",
+            "test_secret_123",
+            &Uuid::new_v4().to_string(),
+        )
+        .unwrap();
+        
+        let count_tc_tasks = || -> i64 {
+            rt.block_on(async {
+                let row = test_client
+                    .query_one(
+                        "SELECT COUNT(*) as count FROM tc_tasks WHERE user_id = $1",
+                        &[&user_id_uuid],
+                    )
+                    .await
+                    .unwrap();
+                row.get::<_, i64>("count")
+            })
+        };
+        
+        let _ = mgr.sync();
+        
+        let count_after_first = count_tc_tasks();
+        assert_eq!(count_after_first, 3, 
+            "First sync should create 3 tasks in tc_tasks");
+        
+        let _ = mgr.sync();
+        
+        let count_after_second = count_tc_tasks();
+        assert_eq!(count_after_second, 3,
+            "Second sync should not create duplicate tasks");
+    }
+
     // ================================================================
     // clear_local_data
     // ================================================================
