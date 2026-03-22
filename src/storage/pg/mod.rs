@@ -280,6 +280,16 @@ impl PostgresTaskManager {
                 )
                 .await
                 .map_err(|e| TaskError::StorageError(format!("Failed to create task: {e}")))?;
+
+            // Add to working set
+            self.client
+                .execute(
+                    "INSERT INTO tg_working_set (user_id, task_uuid, position)
+                     SELECT $1, $2, COALESCE(MAX(position), 0) + 1 FROM tg_working_set WHERE user_id = $1",
+                    &[&user_id, &uuid],
+                )
+                .await
+                .map_err(|e| TaskError::StorageError(format!("Failed to add to working set: {e}")))?;
             Ok::<(), TaskError>(())
         })?;
 
@@ -296,7 +306,7 @@ impl PostgresTaskManager {
             let row = self.client
                 .query_opt(
                     "SELECT uuid, description, status, project, tags, priority, entry, modified_at, due, wait, start, recur, urgency, is_active, is_waiting
-                     FROM tg_tasks WHERE user_id = $1 AND uuid = $2",
+                     FROM tg_tasks WHERE user_id = $1 AND uuid = $2 AND status != 'deleted'",
                     &[&user_id, &uuid],
                 )
                 .await
@@ -569,6 +579,15 @@ impl PostgresTaskManager {
                 )
                 .await
                 .map_err(|e| TaskError::StorageError(format!("Failed to delete: {e}")))?;
+
+            // Remove from working set
+            self.client
+                .execute(
+                    "DELETE FROM tg_working_set WHERE user_id = $1 AND task_uuid = $2",
+                    &[&user_id, &uuid],
+                )
+                .await
+                .map_err(|e| TaskError::StorageError(format!("Failed to remove from working set: {e}")))?;
             Ok::<(), TaskError>(())
         })?;
 
