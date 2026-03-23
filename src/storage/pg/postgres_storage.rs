@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
+use std::sync::Arc;
 use taskchampion::server::VersionId;
 use taskchampion::storage::{Storage, StorageTxn, TaskMap};
 use taskchampion::{Error as TcError, Operation, Uuid};
@@ -8,13 +9,12 @@ use tokio_postgres::Client;
 
 pub struct PostgresStorage {
     pub database_url: String,
-    pub client: Client,
+    pub client: Arc<Client>,
     pub user_id: Uuid,
 }
 
 impl PostgresStorage {
     pub async fn new(database_url: String, user_id: Uuid) -> Result<Self, TcError> {
-        // Create TLS connector for secure connections
         let tls = MakeTlsConnector::new(
             TlsConnector::builder()
                 .build()
@@ -33,12 +33,12 @@ impl PostgresStorage {
 
         Ok(PostgresStorage {
             database_url,
-            client,
+            client: Arc::new(client),
             user_id,
         })
     }
 
-    pub fn from_client(client: Client, database_url: String, user_id: Uuid) -> Self {
+    pub fn from_client(client: Arc<Client>, database_url: String, user_id: Uuid) -> Self {
         PostgresStorage {
             database_url,
             client,

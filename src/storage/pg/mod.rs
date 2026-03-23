@@ -705,17 +705,17 @@ impl PostgresTaskManager {
                 .map_err(|e| TaskError::StorageError(format!("Failed to read tasks: {e}")))
         })?;
 
+        let client_clone = self.client.clone();
+        let database_url_clone = self.database_url.clone();
+
         let result = self.rt.block_on(async {
             init_tc_schema(&self.client).await.map_err(|e| {
                 taskchampion::Error::Database(format!("Failed to init schema: {}", e))
             })?;
 
             let tc_user_id = TcUuid::from_bytes(*user_id.as_bytes());
-            let storage = PostgresStorage::new(self.database_url.clone(), tc_user_id)
-                .await
-                .map_err(|e| {
-                    taskchampion::Error::Database(format!("Failed to create storage: {}", e))
-                })?;
+            let storage =
+                PostgresStorage::from_client(client_clone, database_url_clone, tc_user_id);
             let mut replica = Replica::new(storage);
 
             // Get UUIDs of tasks already in tc_tasks (TaskChampion storage) - skip re-creating
@@ -799,13 +799,8 @@ impl PostgresTaskManager {
             let mut server = server_config.into_server().await?;
             replica.sync(&mut server, false).await?;
 
-            let all_uuids = replica.all_task_uuids().await?;
-            let mut synced_tasks: Vec<(TcUuid, taskchampion::Task)> = Vec::new();
-            for uuid in all_uuids {
-                if let Some(task) = replica.get_task(uuid).await? {
-                    synced_tasks.push((uuid, task));
-                }
-            }
+            let synced_tasks: Vec<(TcUuid, taskchampion::Task)> =
+                replica.all_tasks().await?.into_iter().collect();
 
             Ok::<Vec<(TcUuid, taskchampion::Task)>, taskchampion::Error>(synced_tasks)
         });
@@ -826,48 +821,85 @@ impl PostgresTaskManager {
                 .await
                 .map_err(|e| TaskError::StorageError(format!("Failed to clear tasks before sync write: {e}")))?;
 
-            for (tc_uuid, task) in &synced_tasks {
-                let task_uuid = Uuid::from_bytes(*tc_uuid.as_bytes());
-                let desc = task.get_description().to_string();
-                let status_str = format!("{:?}", task.get_status()).to_lowercase();
-                let project: Option<String> = task.get_value("project").map(|s| s.to_string());
-                let tags: Vec<String> = task.get_tags()
-                    .filter(|t| !t.is_synthetic())
-                    .map(|t| t.to_string())
-                    .collect();
-                let priority: Option<String> = {
-                    let p = task.get_priority();
-                    if p.is_empty() { None } else { Some(p.to_string()) }
-                };
-                let entry: Option<DateTime<Utc>> = task.get_entry();
-                let modified_at: DateTime<Utc> = task.get_modified().unwrap_or_else(Utc::now);
-                let due: Option<DateTime<Utc>> = task.get_due();
-                let wait: Option<DateTime<Utc>> = task.get_wait();
-                let is_active = task.is_active();
-                let is_waiting = task.is_waiting();
-                let start: Option<DateTime<Utc>> = task.get_value("start")
-                    .and_then(|s| s.parse::<i64>().ok())
-                    .map(|ts| DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now));
-                let recur: Option<String> = task.get_value("recur").map(|s| s.to_string());
+            if !synced_tasks.is_empty() {
+                let mut uuids: Vec<Uuid> = Vec::with_capacity(synced_tasks.len());
+                let mut descriptions: Vec<String> = Vec::with_capacity(synced_tasks.len());
+                let mut statuses: Vec<String> = Vec::with_capacity(synced_tasks.len());
+                let mut projects: Vec<Option<String>> = Vec::with_capacity(synced_tasks.len());
+                let mut tags_arr: Vec<Vec<String>> = Vec::with_capacity(synced_tasks.len());
+                let mut priorities: Vec<Option<String>> = Vec::with_capacity(synced_tasks.len());
+                let mut entries: Vec<Option<DateTime<Utc>>> = Vec::with_capacity(synced_tasks.len());
+                let mut modified_ats: Vec<DateTime<Utc>> = Vec::with_capacity(synced_tasks.len());
+                let mut dues: Vec<Option<DateTime<Utc>>> = Vec::with_capacity(synced_tasks.len());
+                let mut waits: Vec<Option<DateTime<Utc>>> = Vec::with_capacity(synced_tasks.len());
+                let mut starts: Vec<Option<DateTime<Utc>>> = Vec::with_capacity(synced_tasks.len());
+                let mut recurs: Vec<Option<String>> = Vec::with_capacity(synced_tasks.len());
+                let mut urgencies: Vec<f64> = Vec::with_capacity(synced_tasks.len());
+                let mut is_actives: Vec<bool> = Vec::with_capacity(synced_tasks.len());
+                let mut is_waitings: Vec<bool> = Vec::with_capacity(synced_tasks.len());
 
-                let has_next = tags.iter().any(|t| t == "next");
-                let urgency = compute_urgency(
-                    is_active,
-                    is_waiting,
-                    has_next,
-                    &priority,
-                    due.as_ref(),
-                    entry.as_ref(),
-                    &tags,
-                    &project,
-                );
+                for (tc_uuid, task) in &synced_tasks {
+                    let task_uuid = Uuid::from_bytes(*tc_uuid.as_bytes());
+                    let desc = task.get_description().to_string();
+                    let status_str = format!("{:?}", task.get_status()).to_lowercase();
+                    let project: Option<String> = task.get_value("project").map(|s| s.to_string());
+                    let tags: Vec<String> = task.get_tags()
+                        .filter(|t| !t.is_synthetic())
+                        .map(|t| t.to_string())
+                        .collect();
+                    let priority: Option<String> = {
+                        let p = task.get_priority();
+                        if p.is_empty() { None } else { Some(p.to_string()) }
+                    };
+                    let entry: Option<DateTime<Utc>> = task.get_entry();
+                    let modified_at: DateTime<Utc> = task.get_modified().unwrap_or_else(Utc::now);
+                    let due: Option<DateTime<Utc>> = task.get_due();
+                    let wait: Option<DateTime<Utc>> = task.get_wait();
+                    let is_active = task.is_active();
+                    let is_waiting = task.is_waiting();
+                    let start: Option<DateTime<Utc>> = task.get_value("start")
+                        .and_then(|s| s.parse::<i64>().ok())
+                        .map(|ts| DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now));
+                    let recur: Option<String> = task.get_value("recur").map(|s| s.to_string());
+
+                    let has_next = tags.iter().any(|t| t == "next");
+                    let urgency = compute_urgency(
+                        is_active,
+                        is_waiting,
+                        has_next,
+                        &priority,
+                        due.as_ref(),
+                        entry.as_ref(),
+                        &tags,
+                        &project,
+                    );
+
+                    uuids.push(task_uuid);
+                    descriptions.push(desc);
+                    statuses.push(status_str);
+                    projects.push(project);
+                    tags_arr.push(tags);
+                    priorities.push(priority);
+                    entries.push(entry);
+                    modified_ats.push(modified_at);
+                    dues.push(due);
+                    waits.push(wait);
+                    starts.push(start);
+                    recurs.push(recur);
+                    urgencies.push(urgency);
+                    is_actives.push(is_active);
+                    is_waitings.push(is_waiting);
+                }
 
                 self.client
                     .execute(
                         "INSERT INTO tg_tasks \
                          (user_id, uuid, description, status, project, tags, priority, \
                           entry, modified_at, due, wait, start, recur, urgency, is_active, is_waiting) \
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
+                         SELECT $1, * FROM unnest($2::uuid[], $3::text[], $4::text[], $5::text[], \
+                                $6::text[][], $7::text[], $8::timestamptz[], $9::timestamptz[], \
+                                $10::timestamptz[], $11::timestamptz[], $12::timestamptz[], \
+                                $13::text[], $14::float8[], $15::bool[], $16::bool[]) \
                          ON CONFLICT (user_id, uuid) DO UPDATE SET \
                            description = EXCLUDED.description, \
                            status = EXCLUDED.status, \
@@ -884,13 +916,13 @@ impl PostgresTaskManager {
                            is_active = EXCLUDED.is_active, \
                            is_waiting = EXCLUDED.is_waiting",
                         &[
-                            &user_id, &task_uuid, &desc, &status_str, &project, &tags,
-                            &priority, &entry, &modified_at, &due, &wait, &start,
-                            &recur, &urgency, &is_active, &is_waiting,
+                            &user_id, &uuids, &descriptions, &statuses, &projects, &tags_arr,
+                            &priorities, &entries, &modified_ats, &dues, &waits, &starts,
+                            &recurs, &urgencies, &is_actives, &is_waitings,
                         ],
                     )
                     .await
-                    .map_err(|e| TaskError::StorageError(format!("Failed to upsert synced task: {e}")))?;
+                    .map_err(|e| TaskError::StorageError(format!("Failed to bulk upsert synced tasks: {e}")))?;
             }
 
             self.client
