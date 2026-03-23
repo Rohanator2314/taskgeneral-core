@@ -905,7 +905,7 @@ impl PostgresTaskManager {
                            description = EXCLUDED.description, \
                            status = EXCLUDED.status, \
                            project = EXCLUDED.project, \
-                           tags = EXCLUDED.tags, \
+                           tags = EXCLUDED.tags::text[], \
                            priority = EXCLUDED.priority, \
                            entry = EXCLUDED.entry, \
                            modified_at = EXCLUDED.modified_at, \
