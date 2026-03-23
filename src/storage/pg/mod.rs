@@ -900,29 +900,8 @@ impl PostgresTaskManager {
                     is_waitings.push(is_waiting);
                 }
 
-                let insert_stmt = self.client.prepare(
-                    "INSERT INTO tg_tasks \
-                     (user_id, uuid, description, status, project, tags, priority, \
-                      entry, modified_at, due, wait, start, recur, urgency, is_active, is_waiting) \
-                     VALUES ($1, $2, $3, $4, $5, $6::text[], $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
-                     ON CONFLICT (user_id, uuid) DO UPDATE SET \
-                       description = EXCLUDED.description, \
-                       status = EXCLUDED.status, \
-                       project = EXCLUDED.project, \
-                       tags = EXCLUDED.tags, \
-                       priority = EXCLUDED.priority, \
-                       entry = EXCLUDED.entry, \
-                       modified_at = EXCLUDED.modified_at, \
-                       due = EXCLUDED.due, \
-                       wait = EXCLUDED.wait, \
-                       start = EXCLUDED.start, \
-                       recur = EXCLUDED.recur, \
-                       urgency = EXCLUDED.urgency, \
-                       is_active = EXCLUDED.is_active, \
-                       is_waiting = EXCLUDED.is_waiting"
-                ).await
-                .map_err(|e| TaskError::StorageError(format!("Failed to prepare statement: {e}")))?;
-
+                // Skip unchanged tasks to avoid unnecessary writes
+                // Use inline SQL (not prepare()) for Neon/PgBouncer compatibility
                 for i in 0..synced_tasks.len() {
                     if let Some(current_mod) = current_modified.get(&uuids[i]) {
                         if *current_mod == modified_ats[i] {
@@ -930,16 +909,35 @@ impl PostgresTaskManager {
                         }
                     }
 
-                    self.client.execute(
-                        &insert_stmt,
-                        &[
-                            &user_id, &uuids[i], &descriptions[i], &statuses[i], &projects[i], &tags_arr[i],
-                            &priorities[i], &entries[i], &modified_ats[i], &dues[i], &waits[i], &starts[i],
-                            &recurs[i], &urgencies[i], &is_actives[i], &is_waitings[i],
-                        ],
-                    )
-                    .await
-                    .map_err(|e| TaskError::StorageError(format!("Failed to upsert synced task {}: {:?}", uuids[i], e)))?;
+                    self.client
+                        .execute(
+                            "INSERT INTO tg_tasks \
+                             (user_id, uuid, description, status, project, tags, priority, \
+                              entry, modified_at, due, wait, start, recur, urgency, is_active, is_waiting) \
+                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
+                             ON CONFLICT (user_id, uuid) DO UPDATE SET \
+                               description = EXCLUDED.description, \
+                               status = EXCLUDED.status, \
+                               project = EXCLUDED.project, \
+                               tags = EXCLUDED.tags, \
+                               priority = EXCLUDED.priority, \
+                               entry = EXCLUDED.entry, \
+                               modified_at = EXCLUDED.modified_at, \
+                               due = EXCLUDED.due, \
+                               wait = EXCLUDED.wait, \
+                               start = EXCLUDED.start, \
+                               recur = EXCLUDED.recur, \
+                               urgency = EXCLUDED.urgency, \
+                               is_active = EXCLUDED.is_active, \
+                               is_waiting = EXCLUDED.is_waiting",
+                            &[
+                                &user_id, &uuids[i], &descriptions[i], &statuses[i], &projects[i], &tags_arr[i],
+                                &priorities[i], &entries[i], &modified_ats[i], &dues[i], &waits[i], &starts[i],
+                                &recurs[i], &urgencies[i], &is_actives[i], &is_waitings[i],
+                            ],
+                        )
+                        .await
+                        .map_err(|e| TaskError::StorageError(format!("Failed to upsert synced task {}: {:?}", uuids[i], e)))?;
                 }
             }
 
