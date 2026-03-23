@@ -469,13 +469,13 @@ mod tests {
         // 2. Manually inserting them into tc_tasks (simulating first sync)
         // 3. Calling sync() - it should skip creating operations for existing tasks
         // 4. Counting operations table - should have 0 new Create operations
-        
+
         let (mgr_client, rt, database_url) = connect();
         let (test_client, _rt2, _url2) = connect();
-        
+
         let user_id_uuid = Uuid::new_v4();
         let user_id = user_id_uuid.to_string();
-        
+
         let mut mgr = PostgresTaskManager::new_with_runtime_with_url(
             mgr_client,
             &user_id,
@@ -484,12 +484,12 @@ mod tests {
         )
         .expect("Failed to create manager");
         rt.block_on(mgr.init_schema()).expect("init_schema failed");
-        
+
         // Create 3 tasks in tg_tasks
         let task1 = mgr.create_task("Task 1").unwrap();
         let task2 = mgr.create_task("Task 2").unwrap();
         let task3 = mgr.create_task("Task 3").unwrap();
-        
+
         // Manually insert these tasks into tc_tasks (simulating they were already synced)
         rt.block_on(async {
             for task in [&task1, &task2, &task3] {
@@ -504,7 +504,7 @@ mod tests {
                     .expect("Failed to insert into tc_tasks");
             }
         });
-        
+
         // Count tc_tasks before sync - should be 3
         let count_before: i64 = rt.block_on(async {
             let row = test_client
@@ -516,8 +516,11 @@ mod tests {
                 .unwrap();
             row.get("count")
         });
-        assert_eq!(count_before, 3, "Should have 3 tasks in tc_tasks before sync");
-        
+        assert_eq!(
+            count_before, 3,
+            "Should have 3 tasks in tc_tasks before sync"
+        );
+
         // Count operations before sync
         let ops_before: i64 = rt.block_on(async {
             let row = test_client
@@ -529,7 +532,7 @@ mod tests {
                 .unwrap();
             row.get("count")
         });
-        
+
         // Configure sync (doesn't matter if server is unreachable for this test)
         mgr.configure_sync(
             "http://127.0.0.1:9999", // Use localhost:9999 which will fail fast
@@ -537,11 +540,11 @@ mod tests {
             &Uuid::new_v4().to_string(),
         )
         .unwrap();
-        
+
         // Call sync - it should skip existing tasks and NOT create new operations
         // The sync will fail on server connection, but the incremental check happens BEFORE that
         let _sync_result = mgr.sync();
-        
+
         // Count operations after sync - should be same as before (no new Create ops)
         let ops_after: i64 = rt.block_on(async {
             let row = test_client
@@ -553,7 +556,7 @@ mod tests {
                 .unwrap();
             row.get("count")
         });
-        
+
         // The KEY ASSERTION: No new operations should have been created
         // because the HashSet check skipped all 3 existing tasks
         assert_eq!(

@@ -719,7 +719,7 @@ impl PostgresTaskManager {
             let mut replica = Replica::new(storage);
 
             // Get UUIDs of tasks already in tc_tasks (TaskChampion storage) - skip re-creating
-            let existing_tc_uuids: std::collections::HashSet<TcUuid> = 
+            let existing_tc_uuids: std::collections::HashSet<TcUuid> =
                 replica.all_task_uuids().await?.into_iter().collect();
 
             for row in &pg_tasks {

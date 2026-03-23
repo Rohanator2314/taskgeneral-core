@@ -20,7 +20,7 @@ impl PostgresStorage {
                 .build()
                 .map_err(|e| TcError::Database(format!("Failed to build TLS connector: {}", e)))?,
         );
-        
+
         let (client, connection) = tokio_postgres::connect(&database_url, tls)
             .await
             .map_err(|e| TcError::Database(format!("Failed to connect to database: {}", e)))?;
@@ -223,7 +223,7 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
 
     async fn base_version(&mut self) -> std::result::Result<VersionId, TcError> {
         let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
-        
+
         let row = self
             .client
             .query_opt(
