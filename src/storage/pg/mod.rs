@@ -919,7 +919,7 @@ impl PostgresTaskManager {
                         ],
                     )
                     .await
-                    .map_err(|e| TaskError::StorageError(format!("Failed to bulk upsert synced tasks: {e}")))?;
+                    .map_err(|e| TaskError::StorageError(format!("Failed to bulk upsert synced tasks: {:?}", e)))?;
             }
 
             self.client
