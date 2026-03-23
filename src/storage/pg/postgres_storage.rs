@@ -1,8 +1,10 @@
 use async_trait::async_trait;
+use native_tls::TlsConnector;
+use postgres_native_tls::MakeTlsConnector;
 use taskchampion::server::VersionId;
 use taskchampion::storage::{Storage, StorageTxn, TaskMap};
 use taskchampion::{Error as TcError, Operation, Uuid};
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 
 pub struct PostgresStorage {
     pub database_url: String,
@@ -12,7 +14,14 @@ pub struct PostgresStorage {
 
 impl PostgresStorage {
     pub async fn new(database_url: String, user_id: Uuid) -> Result<Self, TcError> {
-        let (client, connection) = tokio_postgres::connect(&database_url, NoTls)
+        // Create TLS connector for secure connections
+        let tls = MakeTlsConnector::new(
+            TlsConnector::builder()
+                .build()
+                .map_err(|e| TcError::Database(format!("Failed to build TLS connector: {}", e)))?,
+        );
+        
+        let (client, connection) = tokio_postgres::connect(&database_url, tls)
             .await
             .map_err(|e| TcError::Database(format!("Failed to connect to database: {}", e)))?;
 
@@ -213,11 +222,13 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
     }
 
     async fn base_version(&mut self) -> std::result::Result<VersionId, TcError> {
+        let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
+        
         let row = self
             .client
             .query_opt(
                 "SELECT value FROM sync_meta WHERE user_id = $1 AND key = 'base_version'",
-                &[&self.user_id],
+                &[&user_uuid],
             )
             .await
             .map_err(|e| TcError::Database(format!("Failed to query base_version: {}", e)))?;
@@ -235,13 +246,14 @@ impl<'a> StorageTxn for PostgresTxn<'a> {
     }
 
     async fn set_base_version(&mut self, version: VersionId) -> std::result::Result<(), TcError> {
+        let user_uuid = uuid::Uuid::from_bytes(*self.user_id.as_bytes());
         let version_str = version.to_string();
 
         self.client
             .execute(
                 "INSERT INTO sync_meta (user_id, key, value) VALUES ($1, $2, $3)
                  ON CONFLICT (user_id, key) DO UPDATE SET value = $3",
-                &[&self.user_id, &"base_version", &version_str],
+                &[&user_uuid, &"base_version", &version_str],
             )
             .await
             .map_err(|e| TcError::Database(format!("Failed to set base_version: {}", e)))?;
