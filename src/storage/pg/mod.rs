@@ -890,22 +890,24 @@ impl PostgresTaskManager {
 
                 self.client
                     .execute(
-                        "INSERT INTO tg_tasks \
+                        "WITH data AS ( \
+                           SELECT $1::uuid as user_id, u.* \
+                           FROM unnest($2::uuid[], $3::text[], $4::text[], $5::text[], \
+                                  $6::text[][], $7::text[], $8::timestamptz[], $9::timestamptz[], \
+                                  $10::timestamptz[], $11::timestamptz[], $12::timestamptz[], \
+                                  $13::text[], $14::float8[], $15::bool[], $16::bool[]) \
+                           AS u(uuid, description, status, project, tags, priority, entry, modified_at, \
+                                due, wait, start, recur, urgency, is_active, is_waiting) \
+                         ) \
+                         INSERT INTO tg_tasks \
                          (user_id, uuid, description, status, project, tags, priority, \
                           entry, modified_at, due, wait, start, recur, urgency, is_active, is_waiting) \
-                         SELECT $1, u.uuid, u.description, u.status, u.project, u.tags, u.priority, \
-                                u.entry, u.modified_at, u.due, u.wait, u.start, u.recur, u.urgency, u.is_active, u.is_waiting \
-                         FROM unnest($2::uuid[], $3::text[], $4::text[], $5::text[], \
-                                $6::text[][], $7::text[], $8::timestamptz[], $9::timestamptz[], \
-                                $10::timestamptz[], $11::timestamptz[], $12::timestamptz[], \
-                                $13::text[], $14::float8[], $15::bool[], $16::bool[]) \
-                         AS u(uuid, description, status, project, tags, priority, entry, modified_at, \
-                              due, wait, start, recur, urgency, is_active, is_waiting) \
+                         SELECT * FROM data \
                          ON CONFLICT (user_id, uuid) DO UPDATE SET \
                            description = EXCLUDED.description, \
                            status = EXCLUDED.status, \
                            project = EXCLUDED.project, \
-                           tags = EXCLUDED.tags::text[], \
+                           tags = EXCLUDED.tags, \
                            priority = EXCLUDED.priority, \
                            entry = EXCLUDED.entry, \
                            modified_at = EXCLUDED.modified_at, \
