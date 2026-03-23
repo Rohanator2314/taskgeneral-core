@@ -1,5 +1,9 @@
 //! SQL migrations for TaskChampion storage backend
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static TC_SCHEMA_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
 /// Schema initialization SQL for TaskChampion storage tables.
 /// All tables include user_id UUID NOT NULL for multi-user isolation.
 pub const INIT_SCHEMA_SQL: &str = r#"
@@ -42,5 +46,10 @@ CREATE TABLE IF NOT EXISTS version (
 
 /// Initialize TaskChampion storage schema
 pub async fn init_tc_schema(client: &tokio_postgres::Client) -> Result<(), tokio_postgres::Error> {
-    client.batch_execute(INIT_SCHEMA_SQL).await
+    if TC_SCHEMA_INITIALIZED.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    client.batch_execute(INIT_SCHEMA_SQL).await?;
+    TC_SCHEMA_INITIALIZED.store(true, Ordering::Relaxed);
+    Ok(())
 }

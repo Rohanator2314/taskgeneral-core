@@ -816,11 +816,8 @@ impl PostgresTaskManager {
         };
 
         self.rt.block_on(async {
-            self.client
-                .execute("DELETE FROM tg_tasks WHERE user_id = $1", &[&user_id])
-                .await
-                .map_err(|e| TaskError::StorageError(format!("Failed to clear tasks before sync write: {e}")))?;
-
+            // We use ON CONFLICT DO UPDATE (upsert), so no DELETE needed.
+            // Tasks deleted remotely will have status="deleted" and won't appear in pending/completed queries.
             if !synced_tasks.is_empty() {
                 let mut uuids: Vec<Uuid> = Vec::with_capacity(synced_tasks.len());
                 let mut descriptions: Vec<String> = Vec::with_capacity(synced_tasks.len());
