@@ -819,6 +819,18 @@ impl PostgresTaskManager {
             // We use ON CONFLICT DO UPDATE (upsert), so no DELETE needed.
             // Tasks deleted remotely will have status="deleted" and won't appear in pending/completed queries.
             if !synced_tasks.is_empty() {
+                // Phase 1: Fetch current modified_at timestamps to skip unchanged tasks
+                let current_modified: std::collections::HashMap<Uuid, DateTime<Utc>> = self.client
+                    .query(
+                        "SELECT uuid, modified_at FROM tg_tasks WHERE user_id = $1",
+                        &[&user_id]
+                    )
+                    .await
+                    .map_err(|e| TaskError::StorageError(format!("Failed to fetch current timestamps: {e}")))?
+                    .into_iter()
+                    .map(|row| (row.get("uuid"), row.get("modified_at")))
+                    .collect();
+
                 let mut uuids: Vec<Uuid> = Vec::with_capacity(synced_tasks.len());
                 let mut descriptions: Vec<String> = Vec::with_capacity(synced_tasks.len());
                 let mut statuses: Vec<String> = Vec::with_capacity(synced_tasks.len());
@@ -888,36 +900,46 @@ impl PostgresTaskManager {
                     is_waitings.push(is_waiting);
                 }
 
+                let insert_stmt = self.client.prepare(
+                    "INSERT INTO tg_tasks \
+                     (user_id, uuid, description, status, project, tags, priority, \
+                      entry, modified_at, due, wait, start, recur, urgency, is_active, is_waiting) \
+                     VALUES ($1, $2, $3, $4, $5, $6::text[], $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
+                     ON CONFLICT (user_id, uuid) DO UPDATE SET \
+                       description = EXCLUDED.description, \
+                       status = EXCLUDED.status, \
+                       project = EXCLUDED.project, \
+                       tags = EXCLUDED.tags, \
+                       priority = EXCLUDED.priority, \
+                       entry = EXCLUDED.entry, \
+                       modified_at = EXCLUDED.modified_at, \
+                       due = EXCLUDED.due, \
+                       wait = EXCLUDED.wait, \
+                       start = EXCLUDED.start, \
+                       recur = EXCLUDED.recur, \
+                       urgency = EXCLUDED.urgency, \
+                       is_active = EXCLUDED.is_active, \
+                       is_waiting = EXCLUDED.is_waiting"
+                ).await
+                .map_err(|e| TaskError::StorageError(format!("Failed to prepare statement: {e}")))?;
+
                 for i in 0..synced_tasks.len() {
-                    self.client
-                        .execute(
-                            "INSERT INTO tg_tasks \
-                             (user_id, uuid, description, status, project, tags, priority, \
-                              entry, modified_at, due, wait, start, recur, urgency, is_active, is_waiting) \
-                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
-                             ON CONFLICT (user_id, uuid) DO UPDATE SET \
-                               description = EXCLUDED.description, \
-                               status = EXCLUDED.status, \
-                               project = EXCLUDED.project, \
-                               tags = EXCLUDED.tags, \
-                               priority = EXCLUDED.priority, \
-                               entry = EXCLUDED.entry, \
-                               modified_at = EXCLUDED.modified_at, \
-                               due = EXCLUDED.due, \
-                               wait = EXCLUDED.wait, \
-                               start = EXCLUDED.start, \
-                               recur = EXCLUDED.recur, \
-                               urgency = EXCLUDED.urgency, \
-                               is_active = EXCLUDED.is_active, \
-                               is_waiting = EXCLUDED.is_waiting",
-                            &[
-                                &user_id, &uuids[i], &descriptions[i], &statuses[i], &projects[i], &tags_arr[i],
-                                &priorities[i], &entries[i], &modified_ats[i], &dues[i], &waits[i], &starts[i],
-                                &recurs[i], &urgencies[i], &is_actives[i], &is_waitings[i],
-                            ],
-                        )
-                        .await
-                        .map_err(|e| TaskError::StorageError(format!("Failed to upsert synced task {}: {:?}", uuids[i], e)))?;
+                    if let Some(current_mod) = current_modified.get(&uuids[i]) {
+                        if *current_mod == modified_ats[i] {
+                            continue;
+                        }
+                    }
+
+                    self.client.execute(
+                        &insert_stmt,
+                        &[
+                            &user_id, &uuids[i], &descriptions[i], &statuses[i], &projects[i], &tags_arr[i],
+                            &priorities[i], &entries[i], &modified_ats[i], &dues[i], &waits[i], &starts[i],
+                            &recurs[i], &urgencies[i], &is_actives[i], &is_waitings[i],
+                        ],
+                    )
+                    .await
+                    .map_err(|e| TaskError::StorageError(format!("Failed to upsert synced task {}: {:?}", uuids[i], e)))?;
                 }
             }
 
