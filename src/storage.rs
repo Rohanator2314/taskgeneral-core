@@ -460,16 +460,6 @@ mod tests {
 
     #[test]
     fn test_sync_incremental_skips_existing_tasks() {
-        // This test verifies the INCREMENTAL SYNC FIX:
-        // The HashSet check in sync() ensures tasks already in tc_tasks
-        // are NOT re-created with new operations.
-        //
-        // We test this by:
-        // 1. Creating tasks in tg_tasks
-        // 2. Manually inserting them into tc_tasks (simulating first sync)
-        // 3. Calling sync() - it should skip creating operations for existing tasks
-        // 4. Counting operations table - should have 0 new Create operations
-
         let (mgr_client, rt, database_url) = connect();
         let (test_client, _rt2, _url2) = connect();
 
@@ -485,43 +475,37 @@ mod tests {
         .expect("Failed to create manager");
         rt.block_on(mgr.init_schema()).expect("init_schema failed");
 
-        // Create 3 tasks in tg_tasks
         let task1 = mgr.create_task("Task 1").unwrap();
         let task2 = mgr.create_task("Task 2").unwrap();
         let task3 = mgr.create_task("Task 3").unwrap();
 
-        // Manually insert these tasks into tc_tasks (simulating they were already synced)
-        rt.block_on(async {
-            for task in [&task1, &task2, &task3] {
-                let task_uuid = Uuid::parse_str(&task.uuid).unwrap();
-                let empty_map = serde_json::json!({"description": task.description.clone()});
-                test_client
-                    .execute(
-                        "INSERT INTO tc_tasks (user_id, uuid, task_map) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-                        &[&user_id_uuid, &task_uuid, &empty_map],
-                    )
-                    .await
-                    .expect("Failed to insert into tc_tasks");
-            }
-        });
+        mgr.configure_sync(
+            "http://127.0.0.1:9999",
+            "test_secret_123",
+            &Uuid::new_v4().to_string(),
+        )
+        .unwrap();
 
-        // Count tc_tasks before sync - should be 3
-        let count_before: i64 = rt.block_on(async {
-            let row = test_client
-                .query_one(
-                    "SELECT COUNT(*) as count FROM tc_tasks WHERE user_id = $1",
+        rt.block_on(async {
+            test_client
+                .execute(
+                    "UPDATE tg_sync_config SET last_sync = NOW() - INTERVAL '1 hour' WHERE user_id = $1",
                     &[&user_id_uuid],
                 )
                 .await
-                .unwrap();
-            row.get("count")
+                .expect("Failed to set last_sync");
         });
-        assert_eq!(
-            count_before, 3,
-            "Should have 3 tasks in tc_tasks before sync"
-        );
 
-        // Count operations before sync
+        rt.block_on(async {
+            test_client
+                .execute(
+                    "UPDATE tg_tasks SET modified_at = NOW() - INTERVAL '2 hours' WHERE user_id = $1",
+                    &[&user_id_uuid],
+                )
+                .await
+                .expect("Failed to set modified_at");
+        });
+
         let ops_before: i64 = rt.block_on(async {
             let row = test_client
                 .query_one(
@@ -533,19 +517,8 @@ mod tests {
             row.get("count")
         });
 
-        // Configure sync (doesn't matter if server is unreachable for this test)
-        mgr.configure_sync(
-            "http://127.0.0.1:9999", // Use localhost:9999 which will fail fast
-            "test_secret_123",
-            &Uuid::new_v4().to_string(),
-        )
-        .unwrap();
-
-        // Call sync - it should skip existing tasks and NOT create new operations
-        // The sync will fail on server connection, but the incremental check happens BEFORE that
         let _sync_result = mgr.sync();
 
-        // Count operations after sync - should be same as before (no new Create ops)
         let ops_after: i64 = rt.block_on(async {
             let row = test_client
                 .query_one(
@@ -557,12 +530,10 @@ mod tests {
             row.get("count")
         });
 
-        // The KEY ASSERTION: No new operations should have been created
-        // because the HashSet check skipped all 3 existing tasks
         assert_eq!(
             ops_after, ops_before,
-            "Incremental sync should NOT create operations for existing tasks. \
-             Before: {}, After: {}. Difference indicates bug in HashSet check.",
+            "Incremental sync should NOT create operations for unmodified tasks. \
+             Before: {}, After: {}. Tasks modified before last_sync should be skipped.",
             ops_before, ops_after
         );
     }
