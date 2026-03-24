@@ -656,7 +656,7 @@ impl PostgresTaskManager {
         let row = self.rt.block_on(async {
             self.client
                 .query_opt(
-                    "SELECT server_url, client_id, encryption_secret_encrypted \
+                    "SELECT server_url, client_id, encryption_secret_encrypted, last_sync \
                      FROM tg_sync_config WHERE user_id = $1",
                     &[&user_id],
                 )
@@ -677,6 +677,7 @@ impl PostgresTaskManager {
         let server_url: Option<String> = row.get("server_url");
         let client_id_str: Option<String> = row.get("client_id");
         let secret_str: Option<String> = row.get("encryption_secret_encrypted");
+        let last_sync: Option<DateTime<Utc>> = row.get("last_sync");
 
         let (server_url, client_id_str, secret_str) = match (server_url, client_id_str, secret_str)
         {
@@ -718,25 +719,19 @@ impl PostgresTaskManager {
                 PostgresStorage::from_client(client_clone, database_url_clone, tc_user_id);
             let mut replica = Replica::new(storage);
 
-            // Get UUIDs of tasks already in tc_tasks (TaskChampion storage) - skip re-creating
-            let existing_tc_uuids: std::collections::HashSet<TcUuid> =
-                replica.all_task_uuids().await?.into_iter().collect();
-
             for row in &pg_tasks {
                 let uuid_val: Uuid = row.get("uuid");
                 let tc_uuid = TcUuid::from_bytes(*uuid_val.as_bytes());
+                let modified_at: Option<DateTime<Utc>> = row.get("modified_at");
 
-                // Skip if task already exists in tc_tasks - no operation needed
-                if existing_tc_uuids.contains(&tc_uuid) {
-                    continue;
+                // Skip tasks that haven't been modified since last sync
+                if let (Some(last_sync_time), Some(mod_time)) = (last_sync, modified_at) {
+                    if mod_time <= last_sync_time {
+                        continue;
+                    }
                 }
 
-                let mut ops = Operations::new();
-                let mut task = replica.create_task(tc_uuid, &mut ops).await?;
-
                 let desc: String = row.get("description");
-                task.set_description(desc, &mut ops)?;
-
                 let status_str: String = row.get("status");
                 let tc_status = match status_str.as_str() {
                     "completed" => Status::Completed,
@@ -744,51 +739,100 @@ impl PostgresTaskManager {
                     "recurring" => Status::Recurring,
                     _ => Status::Pending,
                 };
-                task.set_status(tc_status, &mut ops)?;
+                let project: Option<String> = row.get("project");
+                let tags: Vec<String> = row.get("tags");
+                let priority: Option<String> = row.get("priority");
+                let entry: Option<DateTime<Utc>> = row.get("entry");
+                let due: Option<DateTime<Utc>> = row.get("due");
+                let wait: Option<DateTime<Utc>> = row.get("wait");
+                let recur: Option<String> = row.get("recur");
+                let is_active: bool = row.get("is_active");
 
-                if let Some(project) = row.get::<_, Option<String>>("project") {
-                    task.set_value("project", Some(project), &mut ops)?;
+                let mut ops = Operations::new();
+
+                let existing_task = replica.get_task(tc_uuid).await?;
+                let mut task = if let Some(t) = existing_task {
+                    t
+                } else {
+                    replica.create_task(tc_uuid, &mut ops).await?
+                };
+
+                if task.get_description() != desc {
+                    task.set_description(desc, &mut ops)?;
                 }
 
-                let tags: Vec<String> = row.get("tags");
-                for tag_str in tags {
+                if task.get_status() != tc_status {
+                    task.set_status(tc_status, &mut ops)?;
+                }
+
+                let current_project = task.get_value("project").map(|s| s.to_string());
+                if current_project != project {
+                    task.set_value("project", project, &mut ops)?;
+                }
+
+                let current_tags: std::collections::HashSet<String> = task
+                    .get_tags()
+                    .filter(|t| !t.is_synthetic())
+                    .map(|t| t.to_string())
+                    .collect();
+                let new_tags: std::collections::HashSet<String> = tags.iter().cloned().collect();
+
+                for tag_str in current_tags.difference(&new_tags) {
+                    if let Ok(tag) = tag_str.parse::<Tag>() {
+                        task.remove_tag(&tag, &mut ops)?;
+                    }
+                }
+                for tag_str in new_tags.difference(&current_tags) {
                     if let Ok(tag) = tag_str.parse::<Tag>() {
                         task.add_tag(&tag, &mut ops)?;
                     }
                 }
 
-                let priority: Option<String> = row.get("priority");
-                if let Some(p) = priority {
-                    if !p.is_empty() {
-                        task.set_priority(p, &mut ops)?;
+                let current_priority = {
+                    let p = task.get_priority();
+                    if p.is_empty() {
+                        None
+                    } else {
+                        Some(p.to_string())
+                    }
+                };
+                if current_priority != priority {
+                    task.set_priority(priority.unwrap_or_default(), &mut ops)?;
+                }
+
+                if task.get_entry() != entry {
+                    task.set_entry(entry, &mut ops)?;
+                }
+
+                if task.get_due() != due {
+                    task.set_due(due, &mut ops)?;
+                }
+
+                if task.get_wait() != wait {
+                    task.set_wait(wait, &mut ops)?;
+                }
+
+                let current_recur = task.get_value("recur").map(|s| s.to_string());
+                if current_recur != recur {
+                    task.set_value("recur", recur, &mut ops)?;
+                }
+
+                let current_active = task.is_active();
+                if current_active != is_active {
+                    if is_active {
+                        task.set_value(
+                            "start",
+                            Some(chrono::Utc::now().timestamp().to_string()),
+                            &mut ops,
+                        )?;
+                    } else {
+                        task.set_value("start", None, &mut ops)?;
                     }
                 }
 
-                let entry: Option<DateTime<Utc>> = row.get("entry");
-                if let Some(e) = entry {
-                    task.set_entry(Some(e), &mut ops)?;
+                if !ops.is_empty() {
+                    replica.commit_operations(ops).await?;
                 }
-
-                let due: Option<DateTime<Utc>> = row.get("due");
-                task.set_due(due, &mut ops)?;
-
-                let wait: Option<DateTime<Utc>> = row.get("wait");
-                task.set_wait(wait, &mut ops)?;
-
-                if let Some(recur) = row.get::<_, Option<String>>("recur") {
-                    task.set_value("recur", Some(recur), &mut ops)?;
-                }
-
-                let is_active: bool = row.get("is_active");
-                if is_active {
-                    task.set_value(
-                        "start",
-                        Some(chrono::Utc::now().timestamp().to_string()),
-                        &mut ops,
-                    )?;
-                }
-
-                replica.commit_operations(ops).await?;
             }
 
             let server_config = ServerConfig::Remote {
